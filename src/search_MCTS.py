@@ -12,28 +12,29 @@ class Node:
         self.value_sum = 0.0
         self.children = {}
         self.state = state
-        self.prob = prob
+        self.prob = prob # probability of this move being chosen
         self.parent = parent
-        self.is_expanded = False
+        self.is_expanded = False # have we explored this yet?
         self.move = move
 
 
 def PUCT(node):
+    # calculates the probability of choosing this move, balancing exploration and exploitation
     Q = 0
     if node.visit_count > 0:
         Q = node.value_sum / node.visit_count
 
     C = 2.0
-    U = C * node.prob * math.sqrt(node.parent.visit_count) / (1 + node.visit_count)
+    parent_visits = node.parent.visit_count if node.parent else 1
+    sqrt_visits = math.sqrt(max(1, parent_visits))
+
+    U = C * node.prob * sqrt_visits / (1 + node.visit_count)
 
     return Q + U
 
 
-
 def select_leaf(node):
-    """
-    Traverses down the tree until it hits a node that hasn't been expanded yet.
-    """
+    # continues to go down the tree w highest PUCT until we reach a leaf node
     current = node
     path = [current]
 
@@ -56,7 +57,8 @@ def select_leaf(node):
 def search(root_board, time_limit):
     root_node = Node(state=root_board, parent=None, prob=1.0)
 
-    # Expand root
+    # todo: update heuristic policy into taking from NN that generates prob dist
+    # creates nodes for all of its children
     for move, prob in get_heuristic_policy(root_board):
         next_state = root_board.copy()
         next_state.push(move)
@@ -70,10 +72,11 @@ def search(root_board, time_limit):
         leaf_nodes = []
         paths = []
 
-        for _ in range(BATCH_SIZE):
+        # runs until batch is complete or time up
+        while len(leaf_nodes) < BATCH_SIZE and time.time() - start_time <= time_limit:
             leaf, path = select_leaf(root_node)
 
-            # Handle terminal nodes
+            # handles terminal nodes
             if leaf.state.is_game_over():
                 result = leaf.state.outcome()
                 if result.winner == chess.WHITE:
@@ -83,17 +86,17 @@ def search(root_board, time_limit):
                 else:
                     val = 0.0
 
-                # val is from White's perspective, backprop with correct signs
+                # val is from whites perspective, backprop with correct signs
                 for node in path:
                     node.visit_count += 1
-                    # Each node stores value from the perspective of who moved to reach it
-                    if node.parent is None or node.parent.state.turn == chess.WHITE:
-                        node.value_sum += val
-                    else:
+                    # each node stores value from the perspective of who moved to reach it
+                    if node.state.turn == chess.WHITE:
                         node.value_sum -= val
+                    else:
+                        node.value_sum += val
                 continue
 
-            # Apply virtual loss
+            # apply virtual loss
             for node in path:
                 node.visit_count += 1
                 node.value_sum -= 1.0
@@ -105,18 +108,18 @@ def search(root_board, time_limit):
             continue
 
         boards = [n.state for n in leaf_nodes]
-        values = evaluate_board(boards)  # Returns value from current player's perspective
+        values = evaluate_board(boards)  # returns value from current player's perspective
 
         for i, leaf in enumerate(leaf_nodes):
             val = values[i]  # Value from the perspective of leaf.state.turn
             path = paths[i]
 
-            # Convert to White's perspective
+            # convert to White's perspective
             if leaf.state.turn == chess.BLACK:
                 val = -val
-            # Now val is from White's perspective
+            # now val is from White's perspective
 
-            # Expand leaf
+            # expand leaf
             if not leaf.is_expanded:
                 for move, prob in get_heuristic_policy(leaf.state):
                     next_state = leaf.state.copy()
@@ -124,7 +127,7 @@ def search(root_board, time_limit):
                     leaf.children[move] = Node(state=next_state, parent=leaf, prob=prob, move=move)
                 leaf.is_expanded = True
 
-            # Backpropagate (val is from White's perspective)
+            # backpropagate (val is from White's perspective)
             for node in path:
                 node.value_sum += 1.0  # Remove virtual loss
 
@@ -139,10 +142,11 @@ def search(root_board, time_limit):
     if not root_node.children:
         return None
 
-    best_move= max(
-        root_node.children.values(),
-        key=lambda n: n.value() + 0.1 * math.sqrt(n.visit_count)
+    best_move = max(
+        root_node.children.keys(),
+        key=lambda m: root_node.children[m].visit_count
     )
+
     # Debug: print top moves
     sorted_moves = sorted(root_node.children.items(),
                           key=lambda x: x[1].visit_count,

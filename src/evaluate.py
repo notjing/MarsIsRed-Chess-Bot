@@ -41,6 +41,7 @@ def evaluate_board(boards):
     batch_vecs = []
 
     for board in boards:
+
         fen = board.fen()
 
         if fen in board_cache:
@@ -80,4 +81,6 @@ def evaluate_board(boards):
 
     return win_probabilities
 
+print(evaluate_board([chess.Board("2kr1b1r/ppp1pppp/2b5/3q4/P1P5/1P3N2/1B1PQPPP/R3R1K1 b - - 0 13")]))
+print(evaluate_board([chess.Board("2kr1b1r/ppp1pppp/2b5/8/P1P5/1P3q2/1B1PQPPP/R3R1K1 w - - 0 14")]))
 

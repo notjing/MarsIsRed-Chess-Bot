@@ -124,5 +124,5 @@ if __name__ == "__main__":
     build_tfrecord("chess_evaluations/random_evals.csv", "random", 1_000_000)
     build_tfrecord("chess_evaluations/mate_in_one_0.csv", "mate0")
     build_tfrecord("chess_evaluations/mate_in_one_1.csv", "mate1")
-    build_tfrecord("chess_evaluations/chessData.csv", "data", 1_000_000)
-    build_tfrecord("chess_evaluations/tactic_evals.csv", "tactics", 1_000_000)
+    build_tfrecord("chess_evaluations/chessData.csv", "data", 2_500_000)
+    build_tfrecord("chess_evaluations/tactic_evals.csv", "tactics", 2_500_000)

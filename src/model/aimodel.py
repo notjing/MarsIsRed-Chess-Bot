@@ -63,7 +63,10 @@ def res_block(x, filters):
     x = tf.keras.layers.Add()([shortcut, x]) # The skip connection
     return tf.keras.layers.Activation("relu")(x)
 
+
 def main():
+    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     TFRECORD_DIR = os.path.join(BASE_DIR, "tfrecords")
 
@@ -79,40 +82,83 @@ def main():
     train_ds = get_dataset(train_files, 512)
     test_ds = get_val_dataset(test_files, 512)
 
-    # New CNN structure
     cnn_input = tf.keras.Input(shape=(8, 8, 25), name="board_input")
-    x = tf.keras.layers.Conv2D(128, (3, 3), padding="same", activation="relu")(cnn_input)
+    x = tf.keras.layers.Conv2D(256, (3, 3), padding="same", activation="relu")(cnn_input)
 
-    for _ in range(6):
-        x = res_block(x, 128)
+    for _ in range(12):
+        x = res_block(x, 256)
 
     x = tf.keras.layers.Conv2D(32, (1, 1), activation="relu")(x)
     x = tf.keras.layers.Flatten()(x)
     x = tf.keras.layers.Dense(256, activation='relu')(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
 
     dense_input = tf.keras.Input(shape=(19,), name="extra_input")
     y = tf.keras.layers.Dense(128, activation='relu')(dense_input)
     y = tf.keras.layers.Dense(64, activation='relu')(y)
     y = tf.keras.layers.Dense(32, activation='relu')(y)
+    y = tf.keras.layers.Dropout(0.3)(y)
 
     combined = tf.keras.layers.Concatenate()([x, y])
-    z = tf.keras.layers.Dense(64, activation='relu')(combined)
-    z = tf.keras.layers.Dense(32, activation='relu')(z)
+    z = tf.keras.layers.Dense(128, activation='relu')(combined)
+    z = tf.keras.layers.Dropout(0.3)(z)
+    z = tf.keras.layers.Dense(64, activation='relu')(z)
     output = tf.keras.layers.Dense(1, activation='linear')(z)
 
     aimodel = tf.keras.Model(inputs=[cnn_input, dense_input], outputs=output)
-    aimodel.compile(optimizer=tf.keras.optimizers.Adam(0.00015),
-                     loss=tf.keras.losses.MeanSquaredError(),
-                     metrics=['mse', pawn_error])
+
+    batch_size = 512
+    epochs = 50
+
+    steps_per_epoch = 6_050_000 // batch_size
+    total_steps = steps_per_epoch * epochs
+    validation_steps = 600_000 // batch_size
+
+    lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+        initial_learning_rate=0.002,
+        decay_steps=total_steps,
+        alpha=0.00001
+    )
+
+    optimizer = tf.keras.optimizers.Adam(lr_schedule)
+
+    aimodel.compile(optimizer=optimizer,
+                     loss=pawn_error,
+                     metrics=["mae"])
+
+    os.makedirs('checkpoints', exist_ok=True)
+    os.makedirs('logs', exist_ok=True)
+
+    callbacks = [
+        tf.keras.callbacks.ModelCheckpoint(
+            'checkpoints/model_epoch_{epoch:02d}_val{val_loss:.4f}.keras',
+            save_freq='epoch',
+            save_best_only=False  # keep multiple checkpoints
+        ),
+        tf.keras.callbacks.ModelCheckpoint(
+            'best_model.keras',
+            save_best_only=True,
+            monitor='val_loss',
+            mode='min'
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=3,
+            min_lr=1e-7,
+            verbose=1
+        )
+    ]
 
     # Train the model
     print("Starting training...")
     aimodel.fit(
         train_ds,
         validation_data=test_ds,
-        epochs=40,
-        steps_per_epoch=5850,
-        validation_steps=50
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps,
+        callbacks=callbacks,
 
     )
 
