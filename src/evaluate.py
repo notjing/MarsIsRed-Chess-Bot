@@ -1,32 +1,20 @@
-import math
-import sys
 import numpy as np
 import chess
-import tensorflow as tf
-from huggingface_hub import hf_hub_download
+import onnxruntime as ort
 from model.createparams import square_control, makeboards, board_parameters, get_mapped_coords
+import os
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+onnx_path = os.path.join(script_dir, "model_cache", "chessai_model.onnx")
 
-def pawn_error(y_true, y_pred):
-    return tf.reduce_mean(tf.abs(y_true - y_pred)) * 1500
+try:
+    session = ort.InferenceSession(onnx_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+except Exception as e:
+    print(f"Failed to load ONNX model. Error: {e}")
+    raise
 
-
-model_dir = "model_cache"
-model_path = hf_hub_download(
-    repo_id="notjing/chessai",
-    filename="chessai_model.keras",
-    local_dir=model_dir
-)
-
-mod = tf.keras.models.load_model(
-    model_path,
-    custom_objects={'pawn_error': pawn_error}
-)
-
-
-@tf.function
-def predict_fn(inputs):
-    return mod(inputs, training=False)
+input_name_board = session.get_inputs()[0].name
+input_name_extra = session.get_inputs()[1].name
 
 board_cache = {}
 
@@ -67,20 +55,20 @@ def evaluate_board(boards):
         batch_vecs.append(dense)
         batch_planes.append(planes)
 
-    input_planes = np.array(batch_planes, dtype="float32")
-    input_vecs = np.array(batch_vecs, dtype="float32")
+    input_planes = np.array(batch_planes, dtype=np.float32)
+    input_vecs = np.array(batch_vecs, dtype=np.float32)
 
-    preds = predict_fn([input_planes, input_vecs])
-    raw_scores = preds.numpy().flatten()
+    ort_inputs = {
+        input_name_board: input_planes,
+        input_name_extra: input_vecs
+    }
 
-    win_probabilities = 2 / (1 + np.exp(-0.00368208 * raw_scores * 1500)) - 1
+    outputs = session.run(None, ort_inputs)
 
-    if (cache_hits + cache_misses) % 1000 == 0:
-        hit_rate = cache_hits / (cache_hits + cache_misses) * 100
-        print(f"Cache: {cache_hits} hits, {cache_misses} misses ({hit_rate:.1f}% hit rate)")
+    for i, output in enumerate(session.get_outputs()):
+        print(f"Output {i}: {output.name} - Shape: {output.shape}")
 
-    return win_probabilities
+    win_prob = outputs[0]
+    policy = outputs[1]
 
-print(evaluate_board([chess.Board("2kr1b1r/ppp1pppp/2b5/3q4/P1P5/1P3N2/1B1PQPPP/R3R1K1 b - - 0 13")]))
-print(evaluate_board([chess.Board("2kr1b1r/ppp1pppp/2b5/8/P1P5/1P3q2/1B1PQPPP/R3R1K1 w - - 0 14")]))
-
+    return win_prob, policy

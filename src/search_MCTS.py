@@ -2,161 +2,170 @@ import time
 import chess
 import math
 from evaluate import evaluate_board
-from search_heuristic import get_heuristic_policy
+from model.precomppute_tfrecords import move_to_index
 
-BATCH_SIZE = 256
+BATCH_SIZE = 128
+
+# the current node
+
+TREE_ROOT = None
+
 
 class Node:
-    def __init__(self, state, parent=None, prob=None, move=None):
+    """ node """
+
+    def __init__(self, parent=None, prob=None, move=None, turn=None):
         self.visit_count = 0
         self.value_sum = 0.0
         self.children = {}
-        self.state = state
-        self.prob = prob # probability of this move being chosen
+        self.prob = prob
         self.parent = parent
-        self.is_expanded = False # have we explored this yet?
+        self.is_expanded = False
         self.move = move
+        self.turn = turn
+
+
+def clear_tree():
+    global TREE_ROOT
+    TREE_ROOT = None
 
 
 def PUCT(node):
-    # calculates the probability of choosing this move, balancing exploration and exploitation
+    """ evaluates the node using PUCT """
+    # Q is avg value of past simuations using this move
+    # P is the probability from the NN (not impl. yet
+    # N is the visit count of the parent node
+    # C is just a constant to balance exploitation vs exploration
+
     Q = 0
     if node.visit_count > 0:
         Q = node.value_sum / node.visit_count
 
-    C = 2.0
-    parent_visits = node.parent.visit_count if node.parent else 1
-    sqrt_visits = math.sqrt(max(1, parent_visits))
+    if node.parent and node.parent.turn == chess.BLACK:
+        Q = -Q
 
-    U = C * node.prob * sqrt_visits / (1 + node.visit_count)
+    # when c is higher, it increases exploration
+    C = 3.5
+
+    N = node.parent.visit_count if node.parent else 1
+    U = C * node.prob * math.sqrt(N) / (1 + node.visit_count)
 
     return Q + U
 
 
-def select_leaf(node):
-    # continues to go down the tree w highest PUCT until we reach a leaf node
+def select_leaf(node, board):
+    """ continues going down the tree until we find the best leaf node (unexplored child)"""
     current = node
     path = [current]
 
-    while current.is_expanded:
-        if not current.children:
-            return current, path
-
-        is_white = (current.state.turn == chess.WHITE)
-
+    # loops as long as node is unexplored
+    while current.is_expanded and current.children:
         best_move = max(
             current.children,
             key=lambda m: PUCT(current.children[m])
         )
         current = current.children[best_move]
+        board.push(best_move)
         path.append(current)
 
     return current, path
 
 
 def search(root_board, time_limit):
-    root_node = Node(state=root_board, parent=None, prob=1.0)
+    """ main search func that returns the best move from the given position """
+    global TREE_ROOT
 
-    # todo: update heuristic policy into taking from NN that generates prob dist
-    # creates nodes for all of its children
-    for move, prob in get_heuristic_policy(root_board):
-        next_state = root_board.copy()
-        next_state.push(move)
-        root_node.children[move] = Node(state=next_state, parent=root_node, prob=prob, move=move)
-    root_node.is_expanded = True
+    # if TREE_ROOT is a move behind the new board then make the move
+    if TREE_ROOT is not None and root_board.move_stack:
+        last_move = root_board.peek()
+        if last_move in TREE_ROOT.children:
+            TREE_ROOT = TREE_ROOT.children[last_move]
+            TREE_ROOT.parent = None
+        else:
+            TREE_ROOT = Node(parent=None, prob=1.0, turn=root_board.turn)
+    # otherwise just make a new node
+    else:
+        TREE_ROOT = Node(parent=None, prob=1.0, turn=root_board.turn)
 
     start_time = time.time()
     nodes_visited = 0
 
     while time.time() - start_time <= time_limit:
-        leaf_nodes = []
-        paths = []
+        batch_nodes = []
+        batch_boards = []
+        batch_paths = []
 
-        # runs until batch is complete or time up
-        while len(leaf_nodes) < BATCH_SIZE and time.time() - start_time <= time_limit:
-            leaf, path = select_leaf(root_node)
+        # batches the positions to efficiently eval them
+        while len(batch_nodes) < BATCH_SIZE and time.time() - start_time <= time_limit:
+            leaf, path = select_leaf(TREE_ROOT, root_board)
 
-            # handles terminal nodes
-            if leaf.state.is_game_over():
-                result = leaf.state.outcome()
-                if result.winner == chess.WHITE:
-                    val = 1.0
-                elif result.winner == chess.BLACK:
-                    val = -1.0
-                else:
-                    val = 0.0
+            if root_board.is_game_over():
+                res = root_board.outcome()
+                val = 1.0 if res.winner == chess.WHITE else -1.0 if res.winner == chess.BLACK else 0.0
 
-                # val is from whites perspective, backprop with correct signs
+                # increments visit and values of each node in the path
                 for node in path:
                     node.visit_count += 1
-                    # each node stores value from the perspective of who moved to reach it
-                    if node.state.turn == chess.WHITE:
-                        node.value_sum -= val
-                    else:
-                        node.value_sum += val
+                    node.value_sum += val
+
+                # empties out root_board
+                for _ in range(len(path) - 1):
+                    root_board.pop()
                 continue
 
-            # apply virtual loss
             for node in path:
                 node.visit_count += 1
-                node.value_sum -= 1.0
+                # virtual loss to keep batching from sending the same board
+                v_loss = -1.0 if node.turn == chess.BLACK else 1.0
+                node.value_sum += v_loss
 
-            leaf_nodes.append(leaf)
-            paths.append(path)
+            batch_nodes.append(leaf)
+            batch_boards.append(root_board.copy())
+            batch_paths.append(path)
 
-        if not leaf_nodes:
+            for _ in range(len(path) - 1):
+                root_board.pop()
+
+        if not batch_nodes:
+            print("no nodes in the batch bruh")
             continue
 
-        boards = [n.state for n in leaf_nodes]
-        values = evaluate_board(boards)  # returns value from current player's perspective
+        win_probs, policies = evaluate_board(batch_boards)
 
-        for i, leaf in enumerate(leaf_nodes):
-            val = values[i]  # Value from the perspective of leaf.state.turn
-            path = paths[i]
+        # goes through all the batch_nodes
+        for i, leaf_node in enumerate(batch_nodes):
+            win_prob = win_probs[i][0]
+            policy = policies[i]
+            board = batch_boards[i]
+            path = batch_paths[i]
 
-            # convert to White's perspective
-            if leaf.state.turn == chess.BLACK:
-                val = -val
-            # now val is from White's perspective
+            if not leaf_node.is_expanded:
+                # loops through all the children and creates nodes and assigns the probability for them
+                for move in list(board.legal_moves):
+                    prob = policy[move_to_index(move, board.turn)]
+                    leaf_node.children[move] = Node(parent=leaf_node, prob=prob, move=move, turn=not board.turn)
+                leaf_node.is_expanded = True
 
-            # expand leaf
-            if not leaf.is_expanded:
-                for move, prob in get_heuristic_policy(leaf.state):
-                    next_state = leaf.state.copy()
-                    next_state.push(move)
-                    leaf.children[move] = Node(state=next_state, parent=leaf, prob=prob, move=move)
-                leaf.is_expanded = True
 
-            # backpropagate (val is from White's perspective)
+            # removes the virtual loss
             for node in path:
-                node.value_sum += 1.0  # Remove virtual loss
-
-                # Add real value from the perspective of who chose this node
-                if node.parent is None or node.parent.state.turn == chess.WHITE:
-                    node.value_sum += val
-                else:
-                    node.value_sum -= val
+                v_loss = -1.0 if node.turn == chess.BLACK else 1.0
+                node.value_sum -= v_loss
+                node.value_sum += win_prob
 
             nodes_visited += 1
 
-    if not root_node.children:
+    if not TREE_ROOT.children:
         return None
 
-    best_move = max(
-        root_node.children.keys(),
-        key=lambda m: root_node.children[m].visit_count
-    )
+    best_move = max(TREE_ROOT.children.keys(), key=lambda m: TREE_ROOT.children[m].visit_count)
 
-    # Debug: print top moves
-    sorted_moves = sorted(root_node.children.items(),
-                          key=lambda x: x[1].visit_count,
-                          reverse=True)[:5]
-    print(f"Nodes: {nodes_visited}, Best: {best_move}, Visits: {root_node.children[best_move].visit_count}")
+    sorted_moves = sorted(TREE_ROOT.children.items(), key=lambda x: x[1].visit_count, reverse=True)[:5]
+
+    print(f"Nodes: {nodes_visited} NPS: {int(nodes_visited / (time.time() - start_time))}")
     for move, node in sorted_moves:
-        avg_val = node.value_sum / node.visit_count if node.visit_count > 0 else 0
-        print(f"  {move}: visits={node.visit_count}, avg_value={avg_val:.3f}, prior={node.prob:.3f}")
+        avg_v = node.value_sum / node.visit_count if node.visit_count > 0 else 0
+        print(f" {move}: visits={node.visit_count}, white_val={avg_v:.3f}, prior={node.prob:.3f}")
 
+    print(f"bestmove {best_move}", flush=True)
     return best_move
-
-
-

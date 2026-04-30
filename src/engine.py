@@ -22,7 +22,7 @@ def parse_time_limit(tokens, turn):
     if time_key in tokens:
         idx = tokens.index(time_key) + 1
         time_left_ms = float(tokens[idx])
-        return 10
+        return 20
         # Use 1/20th of remaining time, min 0.1s
         #return max(0.1, (time_left_ms / 1000.0) / 20.0)
 

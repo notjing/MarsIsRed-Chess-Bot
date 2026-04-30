@@ -1,0 +1,35 @@
+import tensorflow as tf
+import tf2onnx
+
+# We must provide the custom metric for the model to load successfully
+def pawn_error(y_true, y_pred):
+    return tf.reduce_mean(tf.abs(y_true - y_pred)) * 1500
+
+def convert_model():
+    model_path = "chessai_model.keras"
+    onnx_path = "../model_cache/chessai_model.onnx"
+
+    print("Loading Keras model...")
+    model = tf.keras.models.load_model(
+        model_path,
+        custom_objects={'pawn_error': pawn_error}
+    )
+
+    print("Converting to ONNX...")
+    # Define the exact input shapes and data types the model expects
+    # 'None' allows for dynamic batch sizes during search
+    input_signature = [
+        tf.TensorSpec((None, 8, 8, 25), tf.float32, name="board_input"),
+        tf.TensorSpec((None, 19), tf.float32, name="extra_input")
+    ]
+
+    tf2onnx.convert.from_keras(
+        model,
+        input_signature=input_signature,
+        opset=13,
+        output_path=onnx_path
+    )
+    print(f"Success! Optimized model saved to {onnx_path}")
+
+if __name__ == "__main__":
+    convert_model()
