@@ -22,7 +22,7 @@ def parse_time_limit(tokens, turn):
     if time_key in tokens:
         idx = tokens.index(time_key) + 1
         time_left_ms = float(tokens[idx])
-        return 20
+        return 10
         # Use 1/20th of remaining time, min 0.1s
         #return max(0.1, (time_left_ms / 1000.0) / 20.0)
 
@@ -97,16 +97,43 @@ def main():
                         for move in tokens[moves_idx:]:
                             board.push_uci(move)
 
+
             elif cmd == "go":
+
                 limit = parse_time_limit(tokens, board.turn)
+
                 log(f"Searching with time limit: {limit:.2f}s")
 
-                move = search.search(board, limit)
+                try:
 
-                if move is None:
-                    print("bestmove (none)", flush=True)
-                else:
+                    move = search.search(board, limit)
+
+                    if move is None:
+                        # Fallback if no moves found
+
+                        move = list(board.legal_moves)[0]
+
+                        print(f"info string EMERGENCY FALLBACK (MCTS returned None)", flush=True)
+
                     print(f"bestmove {move.uci()}", flush=True)
+
+
+                except Exception as e:
+
+
+                    error_str = traceback.format_exc()
+
+                    for err_line in error_str.split('\n'):
+
+                        if err_line.strip():
+                            print(f"CRASH: {err_line}", flush=True)
+
+
+                    import random
+
+                    fallback_move = random.choice(list(board.legal_moves))
+
+                    print(f"bestmove {fallback_move.uci()}", flush=True)
 
             elif cmd == "quit":
                 break

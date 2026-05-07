@@ -6,7 +6,7 @@ def pawn_error(y_true, y_pred):
     return tf.reduce_mean(tf.abs(y_true - y_pred)) * 1500
 
 def convert_model():
-    model_path = "chessai_model.keras"
+    model_path = "best_model.keras"
     onnx_path = "../model_cache/chessai_model.onnx"
 
     print("Loading Keras model...")

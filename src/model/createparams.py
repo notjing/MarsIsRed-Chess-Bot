@@ -72,10 +72,10 @@ def board_parameters(board):
 
     # listicizes the castling rights
     rights = [
-        board.has_kingside_castling_rights(chess.WHITE),
-        board.has_queenside_castling_rights(chess.WHITE),
-        board.has_kingside_castling_rights(chess.BLACK),
-        board.has_queenside_castling_rights(chess.BLACK)
+        board.has_kingside_castling_rights(board.turn),
+        board.has_queenside_castling_rights(board.turn),
+        board.has_kingside_castling_rights(not board.turn),
+        board.has_queenside_castling_rights(not board.turn)
     ]
 
     # converts to 0/1
@@ -85,7 +85,7 @@ def board_parameters(board):
 
     # gets the counts of the pieces normalised to 0-1
 
-    for colour in [chess.WHITE, chess.BLACK]:
+    for colour in [board.turn,  not board.turn]:
         for pt in [[chess.PAWN, 8], [chess.KNIGHT, 2], [chess.BISHOP, 2], [chess.ROOK, 2], [chess.QUEEN, 1], [chess.KING, 1]]:
             counts.append(float(len(board.pieces(pt[0], colour)))/pt[1])
 
@@ -95,9 +95,9 @@ def board_parameters(board):
     for sq, pc in board.piece_map().items():
         v = vals[pc.piece_type]
         score += v if pc.color == board.turn else -v
-    material_diff = [score / 40.0]
+    material_diff = [score / 10]
 
     in_check = [1.0 if board.is_check() else 0.0]
     is_mate = [1.0 if board.is_checkmate() else 0.0]
 
-    return castling + counts + material_diff + in_check
+    return castling + counts + material_diff + in_check + is_mate

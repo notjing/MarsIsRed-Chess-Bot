@@ -45,7 +45,7 @@ def PUCT(node):
         Q = -Q
 
     # when c is higher, it increases exploration
-    C = 3.5
+    C = 1
 
     N = node.parent.visit_count if node.parent else 1
     U = C * node.prob * math.sqrt(N) / (1 + node.visit_count)
@@ -87,16 +87,27 @@ def search(root_board, time_limit):
     else:
         TREE_ROOT = Node(parent=None, prob=1.0, turn=root_board.turn)
 
+    if not TREE_ROOT.is_expanded:
+        win_probs, policies = evaluate_board([root_board])
+        root_policy = policies[0].reshape(8, 8, 73)
+
+        for move in list(root_board.legal_moves):
+            prob = root_policy[move_to_index(move, root_board.turn)]
+            TREE_ROOT.children[move] = Node(parent=TREE_ROOT, prob=prob, move=move, turn=not root_board.turn)
+        TREE_ROOT.is_expanded = True
+
     start_time = time.time()
     nodes_visited = 0
 
-    while time.time() - start_time <= time_limit:
+    safe_limit = max(0.1, time_limit - 0.5)
+
+    while time.time() - start_time <= safe_limit:
         batch_nodes = []
         batch_boards = []
         batch_paths = []
 
         # batches the positions to efficiently eval them
-        while len(batch_nodes) < BATCH_SIZE and time.time() - start_time <= time_limit:
+        while len(batch_nodes) < BATCH_SIZE and time.time() - start_time <= safe_limit:
             leaf, path = select_leaf(TREE_ROOT, root_board)
 
             if root_board.is_game_over():
@@ -115,8 +126,8 @@ def search(root_board, time_limit):
 
             for node in path:
                 node.visit_count += 1
-                # virtual loss to keep batching from sending the same board
-                v_loss = -1.0 if node.turn == chess.BLACK else 1.0
+                # virtual loss
+                v_loss = 1.0 if node.turn == chess.BLACK else -1.0
                 node.value_sum += v_loss
 
             batch_nodes.append(leaf)
@@ -127,7 +138,6 @@ def search(root_board, time_limit):
                 root_board.pop()
 
         if not batch_nodes:
-            print("no nodes in the batch bruh")
             continue
 
         win_probs, policies = evaluate_board(batch_boards)
@@ -135,7 +145,7 @@ def search(root_board, time_limit):
         # goes through all the batch_nodes
         for i, leaf_node in enumerate(batch_nodes):
             win_prob = win_probs[i][0]
-            policy = policies[i]
+            policy = policies[i].reshape(8, 8, 73)
             board = batch_boards[i]
             path = batch_paths[i]
 
@@ -146,10 +156,10 @@ def search(root_board, time_limit):
                     leaf_node.children[move] = Node(parent=leaf_node, prob=prob, move=move, turn=not board.turn)
                 leaf_node.is_expanded = True
 
-
-            # removes the virtual loss
+            # removes the virtual loss and adds the real neural network evaluation
             for node in path:
-                v_loss = -1.0 if node.turn == chess.BLACK else 1.0
+                v_loss = 1.0 if node.turn == chess.BLACK else -1.0
+
                 node.value_sum -= v_loss
                 node.value_sum += win_prob
 
@@ -162,10 +172,15 @@ def search(root_board, time_limit):
 
     sorted_moves = sorted(TREE_ROOT.children.items(), key=lambda x: x[1].visit_count, reverse=True)[:5]
 
-    print(f"Nodes: {nodes_visited} NPS: {int(nodes_visited / (time.time() - start_time))}")
+
+    time_taken = max(1e-5, time.time() - start_time)
+    print(f"Nodes: {nodes_visited} NPS: {int(nodes_visited / time_taken)}", flush=True)
+
     for move, node in sorted_moves:
         avg_v = node.value_sum / node.visit_count if node.visit_count > 0 else 0
-        print(f" {move}: visits={node.visit_count}, white_val={avg_v:.3f}, prior={node.prob:.3f}")
+        print(f"{move}: visits={node.visit_count}, white_val={avg_v:.3f}, prior={node.prob:.3f}",
+              flush=True)
 
-    print(f"bestmove {best_move}", flush=True)
     return best_move
+
+

@@ -5,44 +5,39 @@ import numpy as np
 import tensorflow as tf
 import io
 
-# Import your helpers
-from createparams import board_parameters, square_control, makeboards, get_mapped_coords
+from model.createparams import board_parameters, square_control, makeboards, get_mapped_coords
 
 os.makedirs("tfrecords", exist_ok=True)
+
 
 def move_to_index(move, turn):
     QUEEN_DIRS = [(0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1)]
     KNIGHT_DIRS = [(1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)]
     UNDER_PROMOS = [chess.KNIGHT, chess.BISHOP, chess.ROOK]
 
-    from_sq = move.from_square
-    to_sq = move.to_square
+    flip = (turn == chess.BLACK)
 
-    if turn == chess.BLACK:
-        from_sq = chess.square_mirror(from_sq)
-        to_sq = chess.square_mirror(to_sq)
+    from_r, from_c = get_mapped_coords(move.from_square, flip)
+    to_r, to_c = get_mapped_coords(move.to_square, flip)
 
-    from_x, from_y = chess.square_file(from_sq), chess.square_rank(from_sq)
-    to_x, to_y = chess.square_file(to_sq), chess.square_rank(to_sq)
-
-    dx = to_x - from_x
-    dy = to_y - from_y
+    dc = to_c - from_c
+    dr = from_r - to_r
 
     if move.promotion and move.promotion != chess.QUEEN:
         promo_idx = UNDER_PROMOS.index(move.promotion)
-        plane = 64 + ((dx + 1) * 3) + promo_idx
-        return from_x, from_y, plane
+        plane = 64 + ((dc + 1) * 3) + promo_idx
+        return from_r, from_c, plane
 
-    if (dx, dy) in KNIGHT_DIRS:
-        plane = 56 + KNIGHT_DIRS.index((dx, dy))
-        return from_x, from_y, plane
+    if (dc, dr) in KNIGHT_DIRS:
+        plane = 56 + KNIGHT_DIRS.index((dc, dr))
+        return from_r, from_c, plane
 
-    distance = max(abs(dx), abs(dy))
-    direction_u = (dx // distance, dy // distance)
+    distance = max(abs(dc), abs(dr))
+    direction_u = (dc // distance, dr // distance)
     dir_idx = QUEEN_DIRS.index(direction_u)
 
     plane = (dir_idx * 7) + (distance - 1)
-    return from_x, from_y, plane
+    return from_r, from_c, plane
 
 
 def make_policy_target(move, board):
@@ -127,7 +122,6 @@ def build_tfrecord_from_pgn(pgn_path, tfrecord_prefix, max_games=None, shard_siz
 
                     ep_grid = np.zeros((8, 8), dtype=np.float32)
                     if board.ep_square is not None:
-                        from createparams import get_mapped_coords  # Ensure this is imported at the top
                         flip = (board.turn == chess.BLACK)
                         r, c = get_mapped_coords(board.ep_square, flip)
                         ep_grid[r][c] = 1.0
@@ -137,11 +131,9 @@ def build_tfrecord_from_pgn(pgn_path, tfrecord_prefix, max_games=None, shard_siz
 
                     board_layers = np.transpose(board_layers, (1, 2, 0))
 
-                    # --- X2: Dense Extra Features ---
-                    # board_parameters now correctly returns the flat list of 18 items
+                    # board_parameters returns the flat list of 19 items
                     dense_layers = np.array(board_parameters(board), dtype=np.float32)
 
-                    # --- Y: Policy Target ---
                     policy_target = make_policy_target(move, board)
 
                     # Serialize and Write
@@ -190,13 +182,6 @@ def count_games_in_pgn(file_path):
     print(f"Total Games in {file_path}: {count}")
     return count
 
-
-import io
-import chess
-import chess.pgn
-import numpy as np
-
-
 def debug_single_game():
     # A short 4-move Scholar's Mate game
     sample_pgn = (
@@ -239,12 +224,11 @@ def debug_single_game():
 
         print(f"Board Input Shape (X1): {board_layers.shape}  --> Expected: (8, 8, 25)")
 
-        # --- X2: Dense Extra Features ---
-        # board_parameters returns a single flat list of 18 values
+        # board_parameters returns a single flat list of 19 values
         dense_features = board_parameters(board)
         dense_layers = np.array(dense_features, dtype=np.float32)
 
-        print(f"Dense Input Shape (X2): {dense_layers.shape}   --> Expected: (18,)")
+        print(f"Dense Input Shape (X2): {dense_layers.shape}   --> Expected: (19,)")
         # Print rounded values for readability
         print(f"Dense Values: {[round(x, 2) for x in dense_layers]}")
 
@@ -268,4 +252,4 @@ def debug_single_game():
 
 if __name__ == "__main__":
     ## debug_single_game()
-    build_tfrecord_from_pgn("data/lichess_games/lichess_elite_2020-04.pgn", "lichess_elite_20_04", max_games=423018)
+    build_tfrecord_from_pgn("data/lichess_games/lichess_elite_2020-04.pgn", "lichess_elite_20_04", max_games=200000)

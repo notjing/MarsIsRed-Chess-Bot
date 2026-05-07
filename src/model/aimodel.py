@@ -44,7 +44,7 @@ def parse_tfrecord(example):
     # creates an object describing what the .tfrecord looks like in that order
     feature_desc = {
         "board": tf.io.FixedLenFeature([8 * 8 * 25], tf.float32),
-        "extra": tf.io.FixedLenFeature([18], tf.float32),
+        "extra": tf.io.FixedLenFeature([19], tf.float32),
         "eval": tf.io.FixedLenFeature([1], tf.float32),
         "policy": tf.io.FixedLenFeature([8 * 8 * 73], tf.float32),
     }
@@ -94,8 +94,8 @@ def main():
     test_files = all_files.take(num_test_files)
     train_files = all_files.skip(num_test_files)
 
-    train_ds = get_dataset(train_files, 512)
-    test_ds = get_val_dataset(test_files, 512)
+    train_ds = get_dataset(train_files, 256)
+    test_ds = get_val_dataset(test_files, 256)
 
     cnn_input = tf.keras.Input(shape=(8, 8, 25), name="board_input")
     cnn_layers = tf.keras.layers.Conv2D(256, (3, 3), padding="same", activation="relu")(cnn_input)
@@ -119,7 +119,7 @@ def main():
     v = tf.keras.layers.Dense(256, activation='relu')(v)
     v = tf.keras.layers.Dropout(0.3)(v)
 
-    dense_input = tf.keras.Input(shape=(18,), name="extra_input")
+    dense_input = tf.keras.Input(shape=(19,), name="extra_input")
 
     norm_dense = tf.keras.layers.BatchNormalization()(dense_input)
 
@@ -138,11 +138,10 @@ def main():
     aimodel = tf.keras.Model(inputs=[cnn_input, dense_input], outputs=[win_prob, p])
 
     batch_size = 256
-    epochs = 10
+    epochs = 30
 
-    steps_per_epoch = 8_750_000 // batch_size
+    steps_per_epoch = 9_000_000 // batch_size
     total_steps = steps_per_epoch * epochs
-    validation_steps = 875_000 // batch_size
 
     lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
         initial_learning_rate=0.0005,
@@ -162,13 +161,17 @@ def main():
             "prob_dist": tf.keras.losses.MeanSquaredError(),
             "move_dist": tf.keras.losses.CategoricalCrossentropy(from_logits=False)
         },
+        loss_weights={
+            "prob_dist": 3.0,
+            "move_dist": 1.0
+        },
         metrics={
             "prob_dist": ["mae"],
             "move_dist": ["accuracy"]
         }
     )
 
-    aimodel.load_weights('checkpoints/model_epoch_06_val2.0345.keras')
+    aimodel.load_weights("checkpoints/model_epoch_10_val3.3051.keras")
     print("Successfully loaded checkpoint weights!")
 
     os.makedirs('checkpoints', exist_ok=True)
@@ -178,7 +181,7 @@ def main():
         tf.keras.callbacks.ModelCheckpoint(
             'checkpoints/model_epoch_{epoch:02d}_val{val_loss:.4f}.keras',
             save_freq='epoch',
-            save_best_only=False  # keep multiple checkpoints
+            save_best_only=False
         ),
         tf.keras.callbacks.ModelCheckpoint(
             'best_model.keras',
@@ -188,7 +191,6 @@ def main():
         ),
     ]
 
-    # Train the model
     print("Starting training...")
     aimodel.fit(
         train_ds,
@@ -196,7 +198,8 @@ def main():
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
         callbacks=callbacks,
-        initial_epoch=6,
+        validation_steps=500,
+        initial_epoch=10,
     )
 
     print("Evaluating...")

@@ -65,8 +65,6 @@ def evaluate_board(boards):
 
     outputs = session.run(None, ort_inputs)
 
-    for i, output in enumerate(session.get_outputs()):
-        print(f"Output {i}: {output.name} - Shape: {output.shape}")
 
     win_prob = outputs[0]
     policy = outputs[1]
