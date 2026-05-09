@@ -1,7 +1,7 @@
 import numpy as np
 import chess
 import onnxruntime as ort
-from model.createparams import square_control, makeboards, board_parameters, get_mapped_coords
+from ChessAI.src.utils.board_utils import get_mapped_coords, square_control, makeboards, board_parameters
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))

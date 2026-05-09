@@ -1,10 +1,7 @@
-import sys
-import chess
 import chess.engine
-import random
 import time
 import evaluate as model
-from utils import compute_child_hash, compute_zobrist, TT, TTEntry
+from ChessAI.src.old_search.utils import compute_child_hash, compute_zobrist, TT, TTEntry
 from move_ordering import score_move
 
 search_deadline = None

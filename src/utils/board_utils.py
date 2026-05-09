@@ -67,6 +67,7 @@ def makeboards(board):
 
     return layers
 
+
 def board_parameters(board):
     """ Gets all the basic numerical information from the board """
 
@@ -95,6 +96,7 @@ def board_parameters(board):
     for sq, pc in board.piece_map().items():
         v = vals[pc.piece_type]
         score += v if pc.color == board.turn else -v
+    # emphasis more on material
     material_diff = [score / 10]
 
     in_check = [1.0 if board.is_check() else 0.0]

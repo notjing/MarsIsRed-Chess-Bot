@@ -1,4 +1,4 @@
-from utils import compute_child_hash, piece_value, TT
+from ChessAI.src.old_search.utils import compute_child_hash, piece_value, TT
 
 def score_move(board, move, prev_move, parent_hash=None):
     score = 0

@@ -1,8 +1,8 @@
 import time
 import chess
-import math
 from evaluate import evaluate_board
-from model.precomppute_tfrecords import move_to_index
+from ChessAI.src.utils.data_utils import move_to_index
+from utils.math_utils import PUCT
 
 BATCH_SIZE = 128
 
@@ -28,29 +28,6 @@ class Node:
 def clear_tree():
     global TREE_ROOT
     TREE_ROOT = None
-
-
-def PUCT(node):
-    """ evaluates the node using PUCT """
-    # Q is avg value of past simuations using this move
-    # P is the probability from the NN (not impl. yet
-    # N is the visit count of the parent node
-    # C is just a constant to balance exploitation vs exploration
-
-    Q = 0
-    if node.visit_count > 0:
-        Q = node.value_sum / node.visit_count
-
-    if node.parent and node.parent.turn == chess.BLACK:
-        Q = -Q
-
-    # when c is higher, it increases exploration
-    C = 1
-
-    N = node.parent.visit_count if node.parent else 1
-    U = C * node.prob * math.sqrt(N) / (1 + node.visit_count)
-
-    return Q + U
 
 
 def select_leaf(node, board):
