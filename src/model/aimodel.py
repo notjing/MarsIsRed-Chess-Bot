@@ -10,12 +10,12 @@ def get_dataset(files, batch_size):
         files
         # interleave opens multiple files and weaves the records together
         .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
-        # map parses each record
-        .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
         # essentially shuffles the entire thing (kind of)
         .shuffle(200_000)
         # stacks the positions into a multi-dim array grouping batch_size boards together
         .batch(batch_size, drop_remainder=True)
+        # map parses each record
+        .map(parse_tfrecords, num_parallel_calls=tf.data.AUTOTUNE)
         # makes the dataset loop infinitely
         .repeat()
         # CPU prefetches the next batch
@@ -32,14 +32,14 @@ def get_val_dataset(files, batch_size):
     return (
         files
         .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
-        .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
         .batch(batch_size, drop_remainder=True)
+        .map(parse_tfrecords, num_parallel_calls=tf.data.AUTOTUNE)
         .prefetch(tf.data.AUTOTUNE)
     )
 
 
-def parse_tfrecord(example):
-    """ Takes a .tfrecord and breaks it down into the numbers, returning  """
+def parse_tfrecords(example):
+    """ Takes a batch of .tfrecord and breaks it down into the numbers, returning  """
 
     # creates an object describing what the .tfrecord looks like in that order
     feature_desc = {
@@ -50,10 +50,10 @@ def parse_tfrecord(example):
     }
 
     # parses the record
-    ex = tf.io.parse_single_example(example, feature_desc)
+    ex = tf.io.parse_example(example, feature_desc)
 
     # reshapes the board back into ndarray
-    board = tf.reshape(ex["board"], (8, 8, 25))
+    board = tf.reshape(ex["board"], (-1, 8, 8, 25))
 
     return {"board_input": board, "extra_input": ex["extra"]}, {"prob_dist": ex["eval"], "move_dist": ex["policy"]}
 
@@ -65,9 +65,9 @@ def res_block(x, filters):
     shortcut = x
 
     # passes x through a bunch of layers
-    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same", activation="relu")(x)
+    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same", activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(x)
     x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same")(x)
+    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(x)
     x = tf.keras.layers.BatchNormalization()(x)
 
     # creates an add layer which acts as a shortcut
@@ -89,7 +89,7 @@ def main():
     all_files = all_files.shuffle(buffer_size=100, seed=42)
 
     num_files = len(list(tf.io.gfile.glob(os.path.join(TFRECORD_DIR, "*.tfrecord"))))
-    num_test_files = max(1, int(0.1 * num_files))
+    num_test_files = max(1, int(0.05 * num_files))
 
     test_files = all_files.take(num_test_files)
     train_files = all_files.skip(num_test_files)
@@ -107,40 +107,36 @@ def main():
     shared_features = cnn_layers
 
     # which move
-    p = tf.keras.layers.Conv2D(256, (1, 1), activation="relu")(shared_features)
-    p = tf.keras.layers.Conv2D(73, (1, 1), activation="linear")(p)
+    p = tf.keras.layers.Conv2D(256, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(shared_features)
+    p = tf.keras.layers.Conv2D(73, (1, 1), activation="linear", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(p)
 
-    p = tf.keras.layers.Flatten()(p)
-    p = tf.keras.layers.Softmax(dtype='float32', name='move_dist')(p)
+    p = tf.keras.layers.Flatten(name='move_dist', dtype='float32')(p)
 
     # winning probability
-    v = tf.keras.layers.Conv2D(32, (1, 1), activation="relu")(shared_features)
+    v = tf.keras.layers.Conv2D(32, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(shared_features)
     v = tf.keras.layers.Flatten()(v)
-    v = tf.keras.layers.Dense(256, activation='relu')(v)
-    v = tf.keras.layers.Dropout(0.3)(v)
+    v = tf.keras.layers.Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(v)
 
     dense_input = tf.keras.Input(shape=(19,), name="extra_input")
 
     norm_dense = tf.keras.layers.BatchNormalization()(dense_input)
 
-    dense_layers = tf.keras.layers.Dense(128, activation='relu')(norm_dense)
-    dense_layers = tf.keras.layers.Dense(64, activation='relu')(dense_layers)
-    dense_layers = tf.keras.layers.Dense(32, activation='relu')(dense_layers)
-    dense_layers = tf.keras.layers.Dropout(0.3)(dense_layers)
+    dense_layers = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(norm_dense)
+    dense_layers = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(dense_layers)
+    dense_layers = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(dense_layers)
 
     combined = tf.keras.layers.Concatenate()([v, dense_layers])
-    z = tf.keras.layers.Dense(128, activation='relu')(combined)
-    z = tf.keras.layers.Dropout(0.3)(z)
-    z = tf.keras.layers.Dense(64, activation='relu')(z)
+    z = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(combined)
+    z = tf.keras.layers.Dense(64, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(z)
 
     win_prob = tf.keras.layers.Dense(1, activation='tanh', name="prob_dist", dtype='float32')(z)
 
     aimodel = tf.keras.Model(inputs=[cnn_input, dense_input], outputs=[win_prob, p])
 
     batch_size = 256
-    epochs = 30
+    epochs = 20
 
-    steps_per_epoch = 9_000_000 // batch_size
+    steps_per_epoch = 9_500_000 // batch_size
     total_steps = steps_per_epoch * epochs
 
     lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
@@ -159,19 +155,18 @@ def main():
         optimizer=optimizer,
         loss={
             "prob_dist": tf.keras.losses.MeanSquaredError(),
-            "move_dist": tf.keras.losses.CategoricalCrossentropy(from_logits=False)
+            "move_dist": tf.keras.losses.CategoricalCrossentropy(from_logits=True)
         },
         loss_weights={
-            "prob_dist": 3.0,
+            "prob_dist": 2.5,
             "move_dist": 1.0
         },
         metrics={
             "prob_dist": ["mae"],
             "move_dist": ["accuracy"]
-        }
+        },
     )
 
-    aimodel.load_weights("checkpoints/model_epoch_10_val3.3051.keras")
     print("Successfully loaded checkpoint weights!")
 
     os.makedirs('checkpoints', exist_ok=True)
@@ -198,14 +193,14 @@ def main():
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
         callbacks=callbacks,
-        validation_steps=500,
-        initial_epoch=10,
+        validation_steps=200,
+        initial_epoch=0,
     )
 
     print("Evaluating...")
     aimodel.evaluate(test_ds, steps=100, verbose=2)
 
-    model_file = "chessai_model.keras"
+    model_file = "model_iteration/og2.0.keras"
     aimodel.save(model_file)
 
     print("Uploading to Hugging Face...")
@@ -213,7 +208,7 @@ def main():
 
     api.upload_file(
         path_or_fileobj=model_file,
-        path_in_repo="chessai_model.keras",
+        path_in_repo="model_iteration/og2.0.keras",
         repo_id="notjing/chessai",
         repo_type="model",
         commit_message="Upload trained chess AI model"

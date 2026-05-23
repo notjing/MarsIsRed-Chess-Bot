@@ -1,18 +1,13 @@
 import tensorflow as tf
 import tf2onnx
 
-# We must provide the custom metric for the model to load successfully
-def pawn_error(y_true, y_pred):
-    return tf.reduce_mean(tf.abs(y_true - y_pred)) * 1500
-
 def convert_model():
-    model_path = "best_model.keras"
-    onnx_path = "../model_cache/chessai_model.onnx"
+    model_path = "model_iteration/chessai_model_v7.1.keras"
+    onnx_path = "../model_cache/model_v7.1.onnx"
 
     print("Loading Keras model...")
     model = tf.keras.models.load_model(
         model_path,
-        custom_objects={'pawn_error': pawn_error}
     )
 
     print("Converting to ONNX...")

@@ -33,18 +33,18 @@ def get_policy(root_board, T=1.0):
     if T == 0:
         mx = 0
         mv = None
-        for child in root_board.children:
+        for move, child in root_board.children.items():
             if child.visit_count > mx:
-                mv = child.move
+                mv = move
                 mx = child.visit_count
 
         return [(mv, 1)]
 
     else:
-        for child in root_board.children:
+        for child in root_board.children.values():
             total_visits += child.visit_count ** (1/T)
 
-        for child in root_board.children:
-            prob_dist.append((child.move, child.visit_count ** (1/T) / total_visits))
+        for move, child in root_board.children.items():
+            prob_dist.append((move, child.visit_count ** (1/T) / total_visits))
 
         return prob_dist

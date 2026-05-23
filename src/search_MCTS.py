@@ -1,8 +1,10 @@
 import time
 import chess
+import numpy as np
 from evaluate import evaluate_board
-from ChessAI.src.utils.data_utils import move_to_index
+from utils.data_utils import move_to_index
 from utils.math_utils import PUCT
+from utils.board_utils import board_params, dense_params
 
 BATCH_SIZE = 128
 
@@ -13,6 +15,7 @@ TREE_ROOT = None
 
 class Node:
     """ node """
+    __slots__ = ['visit_count', 'value_sum', 'children', 'prob', 'parent', 'is_expanded', 'move', 'turn']
 
     def __init__(self, parent=None, prob=None, move=None, turn=None):
         self.visit_count = 0
@@ -48,9 +51,11 @@ def select_leaf(node, board):
     return current, path
 
 
-def search(root_board, time_limit):
+def search(root_board, time_limit, add_noise=True):
     """ main search func that returns the best move from the given position """
     global TREE_ROOT
+
+    NUM_NODES = 1000
 
     # if TREE_ROOT is a move behind the new board then make the move
     if TREE_ROOT is not None and root_board.move_stack:
@@ -65,7 +70,7 @@ def search(root_board, time_limit):
         TREE_ROOT = Node(parent=None, prob=1.0, turn=root_board.turn)
 
     if not TREE_ROOT.is_expanded:
-        win_probs, policies = evaluate_board([root_board])
+        win_probs, policies = evaluate_board([board_params(root_board)], [dense_params(root_board)])
         root_policy = policies[0].reshape(8, 8, 73)
 
         for move in list(root_board.legal_moves):
@@ -73,42 +78,63 @@ def search(root_board, time_limit):
             TREE_ROOT.children[move] = Node(parent=TREE_ROOT, prob=prob, move=move, turn=not root_board.turn)
         TREE_ROOT.is_expanded = True
 
+    if add_noise and TREE_ROOT.children:
+        noise = np.random.dirichlet([0.3] * len(TREE_ROOT.children))
+        for i, move in enumerate(TREE_ROOT.children):
+            # 75% Neural Net Prior, 25% Random Noise
+            TREE_ROOT.children[move].prob = 0.75 * TREE_ROOT.children[move].prob + 0.25 * noise[i]
+
+
     start_time = time.time()
     nodes_visited = 0
 
     safe_limit = max(0.1, time_limit - 0.5)
 
-    while time.time() - start_time <= safe_limit:
+    while nodes_visited < NUM_NODES:
+    # while time.time() - start_time <= safe_limit:
+
         batch_nodes = []
-        batch_boards = []
+        batch_board_layers = []
+        batch_dense_layers = []
+        batch_turns = []
+        batch_legal_moves = []
+
         batch_paths = []
 
         # batches the positions to efficiently eval them
-        while len(batch_nodes) < BATCH_SIZE and time.time() - start_time <= safe_limit:
+        while len(batch_nodes) < BATCH_SIZE and nodes_visited < NUM_NODES:
+        # while len(batch_nodes) < BATCH_SIZE and time.time() - start_time <= safe_limit:
+
             leaf, path = select_leaf(TREE_ROOT, root_board)
 
             if root_board.is_game_over():
                 res = root_board.outcome()
-                val = 1.0 if res.winner == chess.WHITE else -1.0 if res.winner == chess.BLACK else 0.0
+                abs_val = 1.0 if res.winner == chess.WHITE else -1.0 if res.winner == chess.BLACK else 0.0
 
                 # increments visit and values of each node in the path
                 for node in path:
                     node.visit_count += 1
-                    node.value_sum += val
+
+                    # Convert absolute game result to relative node reward
+                    direction = 1.0 if node.turn == chess.WHITE else -1.0
+                    node.value_sum += abs_val * direction
 
                 # empties out root_board
                 for _ in range(len(path) - 1):
                     root_board.pop()
+
+                nodes_visited += 1
                 continue
 
             for node in path:
                 node.visit_count += 1
-                # virtual loss
-                v_loss = 1.0 if node.turn == chess.BLACK else -1.0
-                node.value_sum += v_loss
+                node.value_sum -= 1.0
 
             batch_nodes.append(leaf)
-            batch_boards.append(root_board.copy())
+            batch_board_layers.append(board_params(root_board))
+            batch_dense_layers.append(dense_params(root_board))
+            batch_legal_moves.append(list(root_board.legal_moves))
+            batch_turns.append(root_board.turn)
             batch_paths.append(path)
 
             for _ in range(len(path) - 1):
@@ -117,28 +143,34 @@ def search(root_board, time_limit):
         if not batch_nodes:
             continue
 
-        win_probs, policies = evaluate_board(batch_boards)
+        win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
 
         # goes through all the batch_nodes
         for i, leaf_node in enumerate(batch_nodes):
             win_prob = win_probs[i][0]
             policy = policies[i].reshape(8, 8, 73)
-            board = batch_boards[i]
+            turn = batch_turns[i]
+            legal_moves = batch_legal_moves[i]
             path = batch_paths[i]
 
             if not leaf_node.is_expanded:
                 # loops through all the children and creates nodes and assigns the probability for them
-                for move in list(board.legal_moves):
-                    prob = policy[move_to_index(move, board.turn)]
-                    leaf_node.children[move] = Node(parent=leaf_node, prob=prob, move=move, turn=not board.turn)
+                for move in list(legal_moves):
+                    prob = policy[move_to_index(move, turn)]
+                    leaf_node.children[move] = Node(parent=leaf_node, prob=prob, move=move, turn=not turn)
                 leaf_node.is_expanded = True
 
             # removes the virtual loss and adds the real neural network evaluation
             for node in path:
-                v_loss = 1.0 if node.turn == chess.BLACK else -1.0
+                # removes virtual loss
+                node.value_sum += 1.0
 
-                node.value_sum -= v_loss
-                node.value_sum += win_prob
+                parent_turn = not node.turn
+
+                # direction is 1 if the parent is the same as the current turn
+                direction = 1.0 if parent_turn == leaf_node.turn else -1.0
+
+                node.value_sum += win_prob * direction
 
             nodes_visited += 1
 
@@ -150,13 +182,13 @@ def search(root_board, time_limit):
     sorted_moves = sorted(TREE_ROOT.children.items(), key=lambda x: x[1].visit_count, reverse=True)[:5]
 
 
-    time_taken = max(1e-5, time.time() - start_time)
-    print(f"Nodes: {nodes_visited} NPS: {int(nodes_visited / time_taken)}", flush=True)
+    #time_taken = max(1e-5, time.time() - start_time)
+    #print(f"Nodes: {nodes_visited} NPS: {int(nodes_visited / time_taken)}", flush=True)
 
-    for move, node in sorted_moves:
-        avg_v = node.value_sum / node.visit_count if node.visit_count > 0 else 0
-        print(f"{move}: visits={node.visit_count}, white_val={avg_v:.3f}, prior={node.prob:.3f}",
-              flush=True)
+    #for move, node in sorted_moves:
+    #    avg_v = node.value_sum / node.visit_count if node.visit_count > 0 else 0
+    #    print(f"{move}: visits={node.visit_count}, white_val={avg_v:.3f}, prior={node.prob:.3f}",
+    #          flush=True)
 
     return best_move
 

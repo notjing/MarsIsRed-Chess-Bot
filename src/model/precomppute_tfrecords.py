@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 import io
 
-from utils.board_utils import board_parameters, square_control, makeboards, get_mapped_coords
+from utils.board_utils import dense_params, board_params
 
 from ChessAI.src.utils.data_utils import make_policy_target, serialize_example
 
@@ -56,25 +56,13 @@ def build_tfrecord_from_pgn(pgn_path, tfrecord_prefix, max_games=None, shard_siz
 
                 try:
 
-                    planes = makeboards(board)
-
-                    s_control = square_control(board)
-
-                    ep_grid = np.zeros((8, 8), dtype=np.float32)
-                    if board.ep_square is not None:
-                        flip = (board.turn == chess.BLACK)
-                        r, c = get_mapped_coords(board.ep_square, flip)
-                        ep_grid[r][c] = 1.0
-
-                    # Combine into 25 planes
-                    board_layers = np.array(planes + s_control + [ep_grid], dtype=np.float32)
-
-                    board_layers = np.transpose(board_layers, (1, 2, 0))
+                    board_layers = board_params(board)
 
                     # board_parameters returns the flat list of 19 items
-                    dense_layers = np.array(board_parameters(board), dtype=np.float32)
+                    dense_layers = np.array(dense_params(board), dtype=np.float32)
 
-                    policy_target = make_policy_target(move, board)
+                    policy = [(move, 1.0)]
+                    policy_target = make_policy_target(policy, board)
 
                     # Serialize and Write
                     writer.write(serialize_example(board_layers, dense_layers, current_value, policy_target))

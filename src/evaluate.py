@@ -1,18 +1,32 @@
 import numpy as np
 import chess
 import onnxruntime as ort
-from ChessAI.src.utils.board_utils import get_mapped_coords, square_control, makeboards, board_parameters
+from utils.board_utils import get_mapped_coords, square_control, piece_positions, dense_params
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-onnx_path = os.path.join(script_dir, "model_cache", "chessai_model.onnx")
+onnx_path = os.path.join(script_dir, "model_cache/" "og.onnx")
+
+cuda_options = {
+    "device_id": 0,
+    "gpu_mem_limit": int(1.5 * 1024 * 1024 * 1024),
+    "arena_extend_strategy": "kSameAsRequested",
+    "cudnn_conv_algo_search": "DEFAULT"
+}
 
 try:
-    session = ort.InferenceSession(onnx_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    session = ort.InferenceSession(
+        onnx_path,
+        providers=[
+            ('CUDAExecutionProvider', cuda_options),
+            'CPUExecutionProvider'
+        ]
+    )
 except Exception as e:
     print(f"Failed to load ONNX model. Error: {e}")
     raise
 
+# 3. Get input names
 input_name_board = session.get_inputs()[0].name
 input_name_extra = session.get_inputs()[1].name
 
@@ -21,42 +35,12 @@ board_cache = {}
 cache_hits = 0
 cache_misses = 0
 
-
-def evaluate_board(boards):
+def evaluate_board(planes, dense):
     global cache_hits, cache_misses
 
-    batch_planes = []
-    batch_vecs = []
 
-    for board in boards:
-
-        fen = board.fen()
-
-        if fen in board_cache:
-            planes, dense = board_cache[fen]
-            cache_hits += 1
-        else:
-            cache_misses += 1
-            flip = (board.turn == chess.BLACK)
-            dense = board_parameters(board)
-            layers = makeboards(board)
-            s_control = square_control(board)
-
-            ep_grid = np.zeros((8, 8), dtype=np.float32)
-            if board.ep_square is not None:
-                r, c = get_mapped_coords(board.ep_square, flip)
-                ep_grid[r][c] = 1.0
-
-            planes = np.array(layers + s_control + [ep_grid], dtype="float32")
-            planes = np.transpose(planes, (1, 2, 0))
-
-            board_cache[fen] = (planes, dense)
-
-        batch_vecs.append(dense)
-        batch_planes.append(planes)
-
-    input_planes = np.array(batch_planes, dtype=np.float32)
-    input_vecs = np.array(batch_vecs, dtype=np.float32)
+    input_planes = np.array(planes, dtype=np.float32)
+    input_vecs = np.array(dense, dtype=np.float32)
 
     ort_inputs = {
         input_name_board: input_planes,
@@ -65,8 +49,13 @@ def evaluate_board(boards):
 
     outputs = session.run(None, ort_inputs)
 
-
     win_prob = outputs[0]
     policy = outputs[1]
 
     return win_prob, policy
+
+def clear_cache():
+    global board_cache, cache_hits, cache_misses
+    board_cache = {}
+    cache_hits = 0
+    cache_misses = 0

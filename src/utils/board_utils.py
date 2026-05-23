@@ -2,17 +2,13 @@ import chess
 import numpy as np
 
 def get_mapped_coords(square, flip):
-    """ Gets the accurate coordinates of a square depending on the POV """
-
     rank = chess.square_rank(square)
     file = chess.square_file(square)
 
     if flip:
-        # to flip the board
-        return rank, 7 - file
+        return rank, file
     else:
         return 7 - rank, file
-
 
 def square_control(board):
     """ Returns 12 boards, each board indicating which squares are being attacked by each piece """
@@ -49,7 +45,7 @@ def square_control(board):
     return layers
 
 
-def makeboards(board):
+def piece_positions(board):
     """ Returns 12 boards, each with the position of the pieces """
     flip = (board.turn == chess.BLACK)
     piece_types = [chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING]
@@ -67,8 +63,21 @@ def makeboards(board):
 
     return layers
 
+def board_params(board):
 
-def board_parameters(board):
+    planes = piece_positions(board)
+    s_control = square_control(board)
+
+    ep_grid = np.zeros((8, 8), dtype=np.float32)
+    if board.ep_square is not None:
+        flip = (board.turn == chess.BLACK)
+        r, c = get_mapped_coords(board.ep_square, flip)
+        ep_grid[r][c] = 1.0
+
+    return np.transpose(np.array(planes + s_control + [ep_grid], dtype=np.float32), (1, 2, 0))
+
+
+def dense_params(board):
     """ Gets all the basic numerical information from the board """
 
     # listicizes the castling rights

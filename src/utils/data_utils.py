@@ -40,8 +40,11 @@ def make_policy_target(prob_dist, board):
     target = np.zeros((8, 8, 73), dtype=np.float32)
 
     for move, prob in prob_dist:
-        x, y, p = move_to_index(move, board.turn)
-        target[x, y, p] = prob
+        try:
+            x, y, p = move_to_index(move, board.turn)
+            target[x, y, p] = prob
+        except (ValueError, IndexError):
+            pass
 
     return target
 
