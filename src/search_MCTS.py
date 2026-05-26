@@ -1,195 +1,86 @@
 import time
 import chess
+import math
+import scipy.special
 import numpy as np
 from evaluate import evaluate_board
 from utils.data_utils import move_to_index
 from utils.math_utils import PUCT
 from utils.board_utils import board_params, dense_params
+from c_bindings import mcts_exts
 
 BATCH_SIZE = 128
-
-# the current node
-
-TREE_ROOT = None
-
-
-class Node:
-    """ node """
-    __slots__ = ['visit_count', 'value_sum', 'children', 'prob', 'parent', 'is_expanded', 'move', 'turn']
-
-    def __init__(self, parent=None, prob=None, move=None, turn=None):
-        self.visit_count = 0
-        self.value_sum = 0.0
-        self.children = {}
-        self.prob = prob
-        self.parent = parent
-        self.is_expanded = False
-        self.move = move
-        self.turn = turn
-
-
-def clear_tree():
-    global TREE_ROOT
-    TREE_ROOT = None
-
-
-def select_leaf(node, board):
-    """ continues going down the tree until we find the best leaf node (unexplored child)"""
-    current = node
-    path = [current]
-
-    # loops as long as node is unexplored
-    while current.is_expanded and current.children:
-        best_move = max(
-            current.children,
-            key=lambda m: PUCT(current.children[m])
-        )
-        current = current.children[best_move]
-        board.push(best_move)
-        path.append(current)
-
-    return current, path
-
+NUM_NODES = 1000
 
 def search(root_board, time_limit, add_noise=True):
     """ main search func that returns the best move from the given position """
-    global TREE_ROOT
 
-    NUM_NODES = 1000
-
-    # if TREE_ROOT is a move behind the new board then make the move
-    if TREE_ROOT is not None and root_board.move_stack:
-        last_move = root_board.peek()
-        if last_move in TREE_ROOT.children:
-            TREE_ROOT = TREE_ROOT.children[last_move]
-            TREE_ROOT.parent = None
-        else:
-            TREE_ROOT = Node(parent=None, prob=1.0, turn=root_board.turn)
-    # otherwise just make a new node
+    if root_board.move_stack:
+        mcts_exts.promote_root(root_board.peek().uci(), root_board.fen())
     else:
-        TREE_ROOT = Node(parent=None, prob=1.0, turn=root_board.turn)
+        mcts_exts.init_tree(root_board.fen())
 
-    if not TREE_ROOT.is_expanded:
-        win_probs, policies = evaluate_board([board_params(root_board)], [dense_params(root_board)])
-        root_policy = policies[0].reshape(8, 8, 73)
 
-        for move in list(root_board.legal_moves):
-            prob = root_policy[move_to_index(move, root_board.turn)]
-            TREE_ROOT.children[move] = Node(parent=TREE_ROOT, prob=prob, move=move, turn=not root_board.turn)
-        TREE_ROOT.is_expanded = True
+    board_list, dense_list = mcts_exts.get_leaf_batch(1)
 
-    if add_noise and TREE_ROOT.children:
-        noise = np.random.dirichlet([0.3] * len(TREE_ROOT.children))
-        for i, move in enumerate(TREE_ROOT.children):
-            # 75% Neural Net Prior, 25% Random Noise
-            TREE_ROOT.children[move].prob = 0.75 * TREE_ROOT.children[move].prob + 0.25 * noise[i]
+    batch_board_layers = np.stack(board_list)
+    batch_dense_layers = np.stack(dense_list)
 
+    win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
+    policies = scipy.special.softmax(policies, axis=1)
+
+    win_probs_formatted = np.array(win_probs, dtype=np.float32).reshape(len(win_probs), 1)
+    policies_formatted = np.array(policies, dtype=np.float32).reshape(len(policies), 4672)
+
+    mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
+
+    if add_noise:
+        mcts_exts.apply_dirichlet_noise(alpha=0.3, epsilon=0.25)
 
     start_time = time.time()
     nodes_visited = 0
 
     safe_limit = max(0.1, time_limit - 0.5)
 
-    while nodes_visited < NUM_NODES:
-    # while time.time() - start_time <= safe_limit:
+    # while nodes_visited < NUM_NODES:
+    while time.time() - start_time <= safe_limit:
 
-        batch_nodes = []
-        batch_board_layers = []
-        batch_dense_layers = []
-        batch_turns = []
-        batch_legal_moves = []
+        board_list, dense_list = mcts_exts.get_leaf_batch(BATCH_SIZE)
 
-        batch_paths = []
-
-        # batches the positions to efficiently eval them
-        while len(batch_nodes) < BATCH_SIZE and nodes_visited < NUM_NODES:
-        # while len(batch_nodes) < BATCH_SIZE and time.time() - start_time <= safe_limit:
-
-            leaf, path = select_leaf(TREE_ROOT, root_board)
-
-            if root_board.is_game_over():
-                res = root_board.outcome()
-                abs_val = 1.0 if res.winner == chess.WHITE else -1.0 if res.winner == chess.BLACK else 0.0
-
-                # increments visit and values of each node in the path
-                for node in path:
-                    node.visit_count += 1
-
-                    # Convert absolute game result to relative node reward
-                    direction = 1.0 if node.turn == chess.WHITE else -1.0
-                    node.value_sum += abs_val * direction
-
-                # empties out root_board
-                for _ in range(len(path) - 1):
-                    root_board.pop()
-
-                nodes_visited += 1
-                continue
-
-            for node in path:
-                node.visit_count += 1
-                node.value_sum -= 1.0
-
-            batch_nodes.append(leaf)
-            batch_board_layers.append(board_params(root_board))
-            batch_dense_layers.append(dense_params(root_board))
-            batch_legal_moves.append(list(root_board.legal_moves))
-            batch_turns.append(root_board.turn)
-            batch_paths.append(path)
-
-            for _ in range(len(path) - 1):
-                root_board.pop()
-
-        if not batch_nodes:
-            continue
+        batch_board_layers = np.stack(board_list)
+        batch_dense_layers = np.stack(dense_list)
 
         win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
+        policies = scipy.special.softmax(policies, axis=1)
 
-        # goes through all the batch_nodes
-        for i, leaf_node in enumerate(batch_nodes):
-            win_prob = win_probs[i][0]
-            policy = policies[i].reshape(8, 8, 73)
-            turn = batch_turns[i]
-            legal_moves = batch_legal_moves[i]
-            path = batch_paths[i]
+        win_probs_formatted = np.array(win_probs, dtype=np.float32).reshape(len(board_list), 1)
+        policies_formatted = np.array(policies, dtype=np.float32).reshape(len(board_list), 4672)
 
-            if not leaf_node.is_expanded:
-                # loops through all the children and creates nodes and assigns the probability for them
-                for move in list(legal_moves):
-                    prob = policy[move_to_index(move, turn)]
-                    leaf_node.children[move] = Node(parent=leaf_node, prob=prob, move=move, turn=not turn)
-                leaf_node.is_expanded = True
+        mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
 
-            # removes the virtual loss and adds the real neural network evaluation
-            for node in path:
-                # removes virtual loss
-                node.value_sum += 1.0
+        nodes_visited += BATCH_SIZE
 
-                parent_turn = not node.turn
+    elapsed_time = time.time() - start_time
+    nps = nodes_visited / elapsed_time if elapsed_time > 0 else 0
 
-                # direction is 1 if the parent is the same as the current turn
-                direction = 1.0 if parent_turn == leaf_node.turn else -1.0
+    # Grab the visit distribution from C++ and sort by probability (descending)
+    policy = mcts_exts.get_root_policy(temperature=1)
 
-                node.value_sum += win_prob * direction
+    top_moves = sorted(policy, key=lambda x: x[1], reverse=True)
 
-            nodes_visited += 1
+    print(f"\n--- Search Complete ---")
+    print(f"Nodes Visited: {nodes_visited:,}")
+    print(f"Engine Speed:  {nps:,.0f} NPS")
+    print("Top Candidate Moves:")
 
-    if not TREE_ROOT.children:
-        return None
+    # Print the top 3 moves (or fewer if there aren't 3 legal moves)
+    for i in range(min(3, len(top_moves))):
+        move_uci, prob = top_moves[i]
+        print(f"  {i + 1}. {move_uci} ({(prob * 100):.1f}%)")
+    print(f"-----------------------\n")
 
-    best_move = max(TREE_ROOT.children.keys(), key=lambda m: TREE_ROOT.children[m].visit_count)
+    best_move_uci = mcts_exts.get_best_move()
 
-    sorted_moves = sorted(TREE_ROOT.children.items(), key=lambda x: x[1].visit_count, reverse=True)[:5]
-
-
-    #time_taken = max(1e-5, time.time() - start_time)
-    #print(f"Nodes: {nodes_visited} NPS: {int(nodes_visited / time_taken)}", flush=True)
-
-    #for move, node in sorted_moves:
-    #    avg_v = node.value_sum / node.visit_count if node.visit_count > 0 else 0
-    #    print(f"{move}: visits={node.visit_count}, white_val={avg_v:.3f}, prior={node.prob:.3f}",
-    #          flush=True)
-
-    return best_move
+    return chess.Move.from_uci(best_move_uci)
 
 

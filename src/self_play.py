@@ -9,6 +9,7 @@ from utils.math_utils import get_policy
 from utils.board_utils import board_params, dense_params
 from utils.data_utils import make_policy_target, serialize_example
 import random
+from c_bindings import mcts_exts
 
 OPENING_BOOK = [
     [],
@@ -60,7 +61,7 @@ def play_single_game():
     for move_str in opening:
         board.push_uci(move_str)
 
-    search_MCTS.clear_tree()
+    mcts_exts.free_tree()
 
     game_history = []
     evaluate.clear_cache()
@@ -69,7 +70,11 @@ def play_single_game():
         T = 1 - min(len(game_history)/24, 1)
 
         search_MCTS.search(board, 0, True)
-        policy = get_policy(search_MCTS.TREE_ROOT, T)
+        raw_policy = mcts_exts.get_root_policy(T)
+
+        policy = [(chess.Move.from_uci(m), p) for m, p in raw_policy]
+
+        mcts_exts.free_tree()
 
         game_history.append({
             "board_layers": board_params(board),

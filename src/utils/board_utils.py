@@ -6,6 +6,7 @@ def get_mapped_coords(square, flip):
     file = chess.square_file(square)
 
     if flip:
+        # since arrays are 0,0 as the top left, (row 7, col 0), doing nothing actually does flip the rank
         return rank, file
     else:
         return 7 - rank, file
@@ -95,7 +96,7 @@ def dense_params(board):
 
     # gets the counts of the pieces normalised to 0-1
 
-    for colour in [board.turn,  not board.turn]:
+    for colour in [board.turn, not board.turn]:
         for pt in [[chess.PAWN, 8], [chess.KNIGHT, 2], [chess.BISHOP, 2], [chess.ROOK, 2], [chess.QUEEN, 1], [chess.KING, 1]]:
             counts.append(float(len(board.pieces(pt[0], colour)))/pt[1])
 

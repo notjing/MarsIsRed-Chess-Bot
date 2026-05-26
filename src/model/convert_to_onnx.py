@@ -2,8 +2,8 @@ import tensorflow as tf
 import tf2onnx
 
 def convert_model():
-    model_path = "model_iteration/chessai_model_v7.1.keras"
-    onnx_path = "../model_cache/model_v7.1.onnx"
+    model_path = "checkpoints/model_epoch_23_val2.5674.keras"
+    onnx_path = "../model_cache/ogog.onnx"
 
     print("Loading Keras model...")
     model = tf.keras.models.load_model(

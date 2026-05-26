@@ -14,9 +14,14 @@ cuda_options = {
     "cudnn_conv_algo_search": "DEFAULT"
 }
 
+sess_options = ort.SessionOptions()
+sess_options.intra_op_num_threads = 1
+sess_options.inter_op_num_threads = 1
+
 try:
     session = ort.InferenceSession(
         onnx_path,
+        sess_options=sess_options,
         providers=[
             ('CUDAExecutionProvider', cuda_options),
             'CPUExecutionProvider'
@@ -35,9 +40,9 @@ board_cache = {}
 cache_hits = 0
 cache_misses = 0
 
+
 def evaluate_board(planes, dense):
     global cache_hits, cache_misses
-
 
     input_planes = np.array(planes, dtype=np.float32)
     input_vecs = np.array(dense, dtype=np.float32)
