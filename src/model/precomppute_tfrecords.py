@@ -19,7 +19,7 @@ def build_tfrecord_from_pgn(pgn_path, tfrecord_prefix, max_games=None, shard_siz
     """
     Streams a PGN file and builds TFRecord shards.
     """
-    shard_idx = 0
+    shard_idx = 165
     count = 0
     games_processed = 0
 
@@ -93,4 +93,4 @@ def build_tfrecord_from_pgn(pgn_path, tfrecord_prefix, max_games=None, shard_siz
 
 if __name__ == "__main__":
     ## debug_single_game()
-    build_tfrecord_from_pgn("data/lichess_games/lichess_elite_2020-04.pgn", "lichess_elite_20_04", max_games=200000)
+    build_tfrecord_from_pgn("data/lichess_games/lichess_elite_2020-07.pgn", "lichess_elite_2020_07", max_games=100_000)

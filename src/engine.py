@@ -106,7 +106,7 @@ def main():
 
                 try:
 
-                    move = search.search(board, limit)
+                    move = search.search(board, limit, False)
 
                     if move is None:
                         # Fallback if no moves found

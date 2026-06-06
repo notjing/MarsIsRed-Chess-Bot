@@ -59,9 +59,7 @@ def play_match(model_white, model_black, game_num, board):
             evaluate.session = model_black  # Swap brain to Black
             active_name = "Black"
 
-        # We must clear the tree every turn because the priors belong to different brains!
         search_MCTS.clear_tree()
-        evaluate.clear_cache()
 
         # Search and get best move
         start_time = time.time()
@@ -83,8 +81,8 @@ def play_match(model_white, model_black, game_num, board):
 def run_tournament():
     # 1. Paths to your two models
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    v1_path = os.path.join(script_dir, "model_cache", "modeL_v1.onnx")
-    v2_path = os.path.join(script_dir, "model_cache", "model_v7.onnx")
+    v1_path = os.path.join(script_dir, "model/model_iteration", "V0.onnx")
+    v2_path = os.path.join(script_dir, "model/model_iteration", "V1.onnx")
 
     print("Loading AI Brains into GPU...")
     session_v1 = load_session(v1_path)

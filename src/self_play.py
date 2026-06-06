@@ -64,10 +64,12 @@ def play_single_game():
     mcts_exts.free_tree()
 
     game_history = []
-    evaluate.clear_cache()
 
     while not board.is_game_over(claim_draw=True):
-        T = 1 - min(len(game_history)/24, 1)
+        if len(game_history) <= 30:
+            T = 1.0
+        else:
+            T = 0.0
 
         search_MCTS.search(board, 0, True)
         raw_policy = mcts_exts.get_root_policy(T)
@@ -163,9 +165,9 @@ if __name__ == "__main__":
 
     NUM_WORKERS = 4
 
-    TOTAL_GAMES_PER_WORKER = 450
+    TOTAL_GAMES_PER_WORKER = 300
     POSITIONS_PER_FILE = 50_000
-    STARTING_BATCH = 1
+    STARTING_BATCH = 2
 
     print(f"Launching {NUM_WORKERS} Parallel Workers...")
 

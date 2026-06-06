@@ -13,7 +13,7 @@
 namespace py = pybind11;
 using namespace chess;
 
-// Node
+// Node :)
 struct Node {
     int visit_count;
     double value_sum;
@@ -48,7 +48,7 @@ Node* TREE_ROOT = nullptr;
 std::string ROOT_FEN = "";
 std::vector<std::vector<Node*>> batch_paths;
 
-// initializes the ROOT_FEN and creates its node
+// initializes the ROOT_FEN & TREE_ROOT and creates its node
 void init_tree(std::string fen) {
     ROOT_FEN = fen;
     Board board(fen);
