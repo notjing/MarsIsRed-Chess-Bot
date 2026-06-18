@@ -165,9 +165,9 @@ if __name__ == "__main__":
 
     NUM_WORKERS = 4
 
-    TOTAL_GAMES_PER_WORKER = 300
+    TOTAL_GAMES_PER_WORKER = 320
     POSITIONS_PER_FILE = 50_000
-    STARTING_BATCH = 2
+    STARTING_BATCH = 6
 
     print(f"Launching {NUM_WORKERS} Parallel Workers...")
 

@@ -11,7 +11,7 @@ def get_dataset(files, batch_size):
         # interleave opens multiple files and weaves the records together
         .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
         # essentially shuffles the entire thing (kind of)
-        .shuffle(1000)
+        .shuffle(100_000)
         # stacks the positions into a multi-dim array grouping batch_size boards together
         # .batch(batch_size, drop_remainder=True)
         # map parses each record
@@ -109,7 +109,7 @@ def main():
 
     train_ds = tf.data.Dataset.sample_from_datasets(
         [sg_ds, sp_ds],
-        weights=[0.90, 0.10]
+        weights=[1.0, 0.0]
     )
 
     train_ds = (
@@ -160,11 +160,11 @@ def main():
     batch_size = 256
     epochs = 1
 
-    steps_per_epoch = 400_000 // batch_size
+    steps_per_epoch = 395_000 // batch_size
     total_steps = steps_per_epoch * epochs
 
     lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-        initial_learning_rate=0.00002,
+        initial_learning_rate=0.000002,
         decay_steps=total_steps,
         alpha=0.00001
     )
@@ -192,7 +192,7 @@ def main():
     )
 
     print("Successfully loaded checkpoint weights!")
-    aimodel.load_weights("model_iteration/V1.keras")
+    aimodel.load_weights("model_iteration/V5.keras")
 
     os.makedirs('checkpoints', exist_ok=True)
     os.makedirs('logs', exist_ok=True)
@@ -225,7 +225,7 @@ def main():
     print("Evaluating...")
     aimodel.evaluate(test_ds, steps=100, verbose=2)
 
-    model_file = "model_iteration/V2.keras"
+    model_file = "model_iteration/V6.keras"
     aimodel.save(model_file)
 
     print("Uploading to Hugging Face...")
@@ -233,7 +233,7 @@ def main():
 
     api.upload_file(
         path_or_fileobj=model_file,
-        path_in_repo="model_iteration/V2.keras",
+        path_in_repo="model_iteration/V6.keras",
         repo_id="notjing/chessai",
         repo_type="model",
         commit_message="Upload trained chess AI model"

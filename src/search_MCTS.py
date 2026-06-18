@@ -48,8 +48,8 @@ def search(root_board, time_limit, add_noise):
 
     safe_limit = max(0.1, time_limit - 0.5)
 
-    # while nodes_visited < NUM_NODES:
-    while time.time() - start_time <= safe_limit:
+    while nodes_visited < NUM_NODES:
+    # while time.time() - start_time <= safe_limit:
         # gets a batch of leaves
         board_list, dense_list = mcts_exts.get_leaf_batch(BATCH_SIZE)
 

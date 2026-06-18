@@ -2,6 +2,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "chess.hpp"
+#include "zobristHashing.hpp"
 #include "feature_extraction.hpp"
 #include <vector>
 #include <string>
@@ -21,12 +22,13 @@ struct Node {
     Move move;
     Color turn;
     bool is_expanded;
+    u64 hash;
 
     Node* parent;
     std::vector<Node*> children;
 
     //initializer
-    Node(Node* p = nullptr, double pr = 0.0, Move m = Move::NULL_MOVE, Color t = Color::WHITE) {
+    Node(Node* p = nullptr, double pr = 0.0, Move m = Move::NULL_MOVE, Color t = Color::WHITE, u64 hsh = 0) {
         visit_count = 0;
         value_sum = 0.0;
         prob = pr;
@@ -34,6 +36,7 @@ struct Node {
         turn = t;
         is_expanded = false;
         parent = p;
+        hash = hsh;
     }
 
     // destructor
@@ -57,7 +60,9 @@ void init_tree(std::string fen) {
         delete TREE_ROOT;
     }
 
-    TREE_ROOT = new Node(nullptr, 1.0, Move::NULL_MOVE, board.sideToMove());
+    u64 initHash = generateHash(board);
+
+    TREE_ROOT = new Node(nullptr, 1.0, Move::NULL_MOVE, board.sideToMove(), initHash);
 }
 
 
@@ -74,7 +79,14 @@ void promoteRoot(std::string moveUci, std::string fen){
     for(auto child : TREE_ROOT->children){
         if(child->move == playedMove){
             Node* tmp = TREE_ROOT;
-            std::erase(TREE_ROOT->children, child);
+            TREE_ROOT->children.erase(
+
+            std::remove(TREE_ROOT->children.begin(),
+                        TREE_ROOT->children.end(),
+                        child),
+            TREE_ROOT->children.end()
+            );
+
             TREE_ROOT = child;
             ROOT_FEN = fen;
             delete tmp;
@@ -262,7 +274,8 @@ void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> polici
 
                     double move_prob = policies_buf(i, policy_idx);
 
-                    Node* child = new Node(leaf, move_prob, m, ~board.sideToMove());
+                    u64 newHash = updateZobristMove(leaf->hash, m, board);
+                    Node* child = new Node(leaf, move_prob, m, ~board.sideToMove(), newHash);
                     leaf->children.push_back(child);
                 }
                 leaf->is_expanded = true;

@@ -81,8 +81,8 @@ def play_match(model_white, model_black, game_num, board):
 def run_tournament():
     # 1. Paths to your two models
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    v1_path = os.path.join(script_dir, "model/model_iteration", "V0.onnx")
-    v2_path = os.path.join(script_dir, "model/model_iteration", "V1.onnx")
+    v1_path = os.path.join(script_dir, "model/model_iteration", "V1.onnx")
+    v2_path = os.path.join(script_dir, "model/model_iteration", "V4.onnx")
 
     print("Loading AI Brains into GPU...")
     session_v1 = load_session(v1_path)
@@ -102,7 +102,7 @@ def run_tournament():
             board.push_uci(move_str)
 
         if i % 2 != 0:
-            print(f">>> MATCH {i}: V1 (White) vs V2 (Black) <<<")
+            print(f">>> MATCH {i}: V1 (White) vs V4 (Black) <<<")
             result = play_match(model_white=session_v1, model_black=session_v2, game_num=i, board=board)
             if result == "1-0":
                 p1_wins += 1
@@ -111,7 +111,7 @@ def run_tournament():
             else:
                 draws += 1
         else:
-            print(f">>> MATCH {i}: V2 (White) vs V1 (Black) <<<")
+            print(f">>> MATCH {i}: V4 (White) vs V1 (Black) <<<")
             result = play_match(model_white=session_v2, model_black=session_v1, game_num=i, board=board)
             if result == "1-0":
                 p2_wins += 1
@@ -123,8 +123,8 @@ def run_tournament():
     print("\n" + "=" * 30)
     print("🏆 TOURNAMENT RESULTS 🏆")
     print("=" * 30)
-    print(f"V1 (Iteration 1) Wins: {p1_wins}")
-    print(f"V2 (Iteration 2) Wins: {p2_wins}")
+    print(f"V1 Wins: {p1_wins}")
+    print(f"V4 Wins: {p2_wins}")
     print(f"Draws:                 {draws}")
 
     if p2_wins > p1_wins:

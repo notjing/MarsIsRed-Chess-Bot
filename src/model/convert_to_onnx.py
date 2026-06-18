@@ -2,8 +2,8 @@ import tensorflow as tf
 import tf2onnx
 
 def convert_model():
-    model_path = "model_iteration/V2.keras"
-    onnx_path = "model_iteration/V2.onnx"
+    model_path = "model_iteration/V5.keras"
+    onnx_path = "model_iteration/V5.onnx"
 
     print("Loading Keras model...")
     model = tf.keras.models.load_model(

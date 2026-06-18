@@ -5,7 +5,7 @@ from utils.board_utils import get_mapped_coords, square_control, piece_positions
 import os
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-onnx_path = os.path.join(script_dir, "model/model_iteration/" "V1.onnx")
+onnx_path = os.path.join(script_dir, "model/model_iteration/" "V5.onnx")
 
 cuda_options = {
     "device_id": 0,
