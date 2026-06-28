@@ -2,8 +2,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "chess.hpp"
-#include "zobristHashing.hpp"
-#include "feature_extraction.hpp"
+#include "headerFiles/zobristHashing.hpp"
+#include "headerFiles/feature_extraction.hpp"
 #include <vector>
 #include <string>
 #include <cmath>
@@ -47,6 +47,20 @@ struct Node {
     }
 };
 
+struct TableEntry {
+    u64 hash;
+    float winProbabilities;
+    std::array<float, 4672> policy;
+
+    TableEntry(){
+        hash = 0;
+    }
+
+};
+
+const int TABLE_SIZE = 1 << 16;
+
+TableEntry* transTable = new TableEntry[TABLE_SIZE];
 Node* TREE_ROOT = nullptr;
 std::string ROOT_FEN = "";
 std::vector<std::vector<Node*>> batch_paths;
@@ -183,6 +197,44 @@ double calculate_PUCT(Node* parent, Node* child) {
     return q_value + u_value;
 }
 
+void applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const float* policy, chess::Board& board){
+
+    Node* leaf = path.back();
+    float win_prob = (leaf->turn == Color::WHITE) ? relative_win_prob : -relative_win_prob;
+
+    if (!leaf->is_expanded) {
+        Movelist moves;
+        movegen::legalmoves(moves, board);
+
+        if (moves.empty()) {
+            if (board.inCheck()) {
+                win_prob = (board.sideToMove() == Color::WHITE) ? -1.0 : 1.0;
+            } else {
+                win_prob = 0.0;
+            }
+        }
+        // Normal Expansion
+        else {
+            for (const Move& m : moves) {
+                int policy_idx = move_to_index(m, board.sideToMove());
+                u64 newHash = updateZobristMove(leaf->hash, m, board);
+                Node* child = new Node(leaf, policy[policy_idx], m, ~board.sideToMove(), newHash);
+
+                leaf->children.push_back(child);
+            }
+        }
+
+        leaf->is_expanded = true;
+
+    }
+
+    for (Node* n : path) {
+        double v_loss = (n->turn == Color::BLACK) ? -0.25 : 0.25;
+        n->value_sum -= v_loss; // Remove virtual loss
+        n->value_sum += win_prob; // Add real evaluation
+    }
+}
+
 // gets a batch of leaves from the TREE_ROOT
 py::tuple get_leaf_batch(int batch_size) {
     py::list board_features;
@@ -191,8 +243,10 @@ py::tuple get_leaf_batch(int batch_size) {
     batch_paths.clear();
     Board root_board(ROOT_FEN);
 
+    int cacheHits = 0;
+
     // loops starting from the TREE_ROOT until you hit a leaf
-    while (board_features.size() < batch_size) {
+    while (cacheHits < batch_size) {
         Node* current = TREE_ROOT;
         std::vector<Node*> current_path = {current};
         Board board = root_board;
@@ -215,6 +269,8 @@ py::tuple get_leaf_batch(int batch_size) {
             current_path.push_back(current);
         }
 
+        size_t idx = current->hash & (TABLE_SIZE - 1);
+
         // adds virtual loss to it
         for (Node* n : current_path) {
             n->visit_count += 1;
@@ -222,8 +278,16 @@ py::tuple get_leaf_batch(int batch_size) {
             n->value_sum += v_loss;
         }
 
-        batch_paths.push_back(current_path);
+        cacheHits++;
 
+        // not a collision
+        if(transTable[idx].hash == current->hash) {
+            applyEvaluation(current_path, transTable[idx].winProbabilities, transTable[idx].policy.data(), board);
+
+            continue;
+        }
+
+        batch_paths.push_back(current_path);
 
         board_features.append(boardParams(board));
         dense_features.append(denseParams(board));
@@ -235,19 +299,12 @@ py::tuple get_leaf_batch(int batch_size) {
 
 void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> policies) {
 
-    // doesn't do any safety checks when accessing memory, 2 is the dimension
     auto win_probs_buf = win_probs.unchecked<2>();
-    auto policies_buf = policies.unchecked<2>();
 
     // loops through the paths
     for (int i = 0; i < batch_paths.size(); i++) {
         std::vector<Node*> path = batch_paths[i];
         Node* leaf = path.back();
-
-        float relative_win_prob = win_probs_buf(i, 0);
-
-        float win_prob = (leaf->turn == Color::WHITE) ? relative_win_prob : -relative_win_prob;
-        // ---------------------
 
         // reconstructs the board
         Board board(ROOT_FEN);
@@ -255,38 +312,16 @@ void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> polici
             board.makeMove(path[j]->move);
         }
 
-        if (!leaf->is_expanded) {
-            Movelist moves;
-            movegen::legalmoves(moves, board);
+        float relative_win_prob = win_probs_buf(i, 0);
+        const float* policy = policies.data(i,0);
 
+        applyEvaluation(path, relative_win_prob, policy, board);
 
-            if (moves.empty()) {
-                if (board.inCheck()) {
-                    win_prob = (board.sideToMove() == Color::WHITE) ? -1.0 : 1.0;
-                } else {
-                    win_prob = 0.0;
-                }
-            }
-            // Normal Expansion
-            else {
-                for (const Move& m : moves) {
-                    int policy_idx = move_to_index(m, board.sideToMove());
+        size_t idx = leaf->hash & (TABLE_SIZE - 1);
+        transTable[idx].hash = leaf->hash;
+        transTable[idx].winProbabilities = relative_win_prob;
+        std::copy(policy, policy + 4672, transTable[idx].policy.begin());
 
-                    double move_prob = policies_buf(i, policy_idx);
-
-                    u64 newHash = updateZobristMove(leaf->hash, m, board);
-                    Node* child = new Node(leaf, move_prob, m, ~board.sideToMove(), newHash);
-                    leaf->children.push_back(child);
-                }
-                leaf->is_expanded = true;
-            }
-        }
-
-        for (Node* n : path) {
-            double v_loss = (n->turn == Color::BLACK) ? -0.25 : 0.25;
-            n->value_sum -= v_loss; // Remove virtual loss
-            n->value_sum += win_prob; // Add real evaluation
-        }
     }
 }
 
@@ -383,6 +418,26 @@ py::list get_root_policy(double temperature = 1.0) {
     return policy;
 }
 
+// Add this above PYBIND11_MODULE
+void print_root_stats() {
+    if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) {
+        std::cout << "Tree root is empty." << std::endl;
+        return;
+    }
+
+    std::cout << "\n--- Root Node Children Stats ---" << std::endl;
+    for (Node* child : TREE_ROOT->children) {
+        double q_val = (child->visit_count > 0) ? (child->value_sum / child->visit_count) : 0.0;
+
+        std::cout << "Move: " << chess::uci::moveToUci(child->move)
+                  << " | N (Visits): " << child->visit_count
+                  << " | W (Total Val): " << child->value_sum
+                  << " | Q (Avg Val): " << q_val
+                  << " | P (Policy): " << child->prob << std::endl;
+    }
+    std::cout << "--------------------------------\n" << std::endl;
+}
+
 // sends these back to python
 PYBIND11_MODULE(mcts_exts, m) {
     m.def("init_tree", &init_tree);
@@ -395,4 +450,5 @@ PYBIND11_MODULE(mcts_exts, m) {
           py::arg("epsilon") = 0.25);
     m.def("get_root_policy", &get_root_policy, py::arg("temperature") = 1.0);
     m.def("promote_root", &promoteRoot);
+    m.def("print_root_stats", &print_root_stats);
 }

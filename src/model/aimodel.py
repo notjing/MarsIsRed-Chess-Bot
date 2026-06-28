@@ -65,9 +65,9 @@ def res_block(x, filters):
     shortcut = x
 
     # passes x through a bunch of layers
-    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same", activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(x)
+    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same", activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(x)
     x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(x)
+    x = tf.keras.layers.Conv2D(filters, (3, 3), padding="same", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(x)
     x = tf.keras.layers.BatchNormalization()(x)
 
     # creates an add layer which acts as a shortcut
@@ -96,9 +96,9 @@ def main():
     sg_files = tf.data.Dataset.list_files(os.path.join(SELF_GEN_DIR, "*.tfrecord"), shuffle=True)
     sp_files = tf.data.Dataset.list_files(os.path.join(SUPERVISED_DIR, "*.tfrecord"), shuffle=True)
 
-    all_files = sg_files.shuffle(buffer_size=100, seed=42)
+    all_files = sp_files.shuffle(buffer_size=100, seed=42)
 
-    num_files = len(list(tf.io.gfile.glob(os.path.join(SELF_GEN_DIR, "*.tfrecord"))))
+    num_files = len(list(tf.io.gfile.glob(os.path.join(SUPERVISED_DIR, "*.tfrecord"))))
     num_test_files = max(1, int(0.05 * num_files))
 
     test_files = all_files.take(num_test_files)
@@ -109,7 +109,7 @@ def main():
 
     train_ds = tf.data.Dataset.sample_from_datasets(
         [sg_ds, sp_ds],
-        weights=[1.0, 0.0]
+        weights=[0.0, 1.0]
     )
 
     train_ds = (
@@ -125,46 +125,46 @@ def main():
     cnn_layers = tf.keras.layers.Conv2D(256, (3, 3), padding="same", activation="relu")(cnn_input)
 
     # creates 12 layers of the blocks
-    for _ in range(12):
+    for _ in range(8):
         cnn_layers = res_block(cnn_layers, 256)
 
     shared_features = cnn_layers
 
     # which move
-    p = tf.keras.layers.Conv2D(256, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(shared_features)
-    p = tf.keras.layers.Conv2D(73, (1, 1), activation="linear", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(p)
+    p = tf.keras.layers.Conv2D(256, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(shared_features)
+    p = tf.keras.layers.Conv2D(73, (1, 1), activation="linear", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(p)
 
     p = tf.keras.layers.Flatten(name='move_dist', dtype='float32')(p)
 
     # winning probability
-    v = tf.keras.layers.Conv2D(32, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-4))(shared_features)
+    v = tf.keras.layers.Conv2D(32, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(shared_features)
     v = tf.keras.layers.Flatten()(v)
-    v = tf.keras.layers.Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(v)
+    v = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(v)
 
     dense_input = tf.keras.Input(shape=(19,), name="extra_input")
 
     norm_dense = tf.keras.layers.BatchNormalization()(dense_input)
 
-    dense_layers = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(norm_dense)
-    dense_layers = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(dense_layers)
-    dense_layers = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(dense_layers)
+    dense_layers = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(norm_dense)
+    dense_layers = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(dense_layers)
+    dense_layers = tf.keras.layers.Dense(16, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(dense_layers)
 
     combined = tf.keras.layers.Concatenate()([v, dense_layers])
-    z = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(combined)
-    z = tf.keras.layers.Dense(64, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(5e-4))(z)
+    z = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(combined)
+    z = tf.keras.layers.Dense(32, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(z)
 
     win_prob = tf.keras.layers.Dense(1, activation='tanh', name="prob_dist", dtype='float32')(z)
 
     aimodel = tf.keras.Model(inputs=[cnn_input, dense_input], outputs=[win_prob, p])
 
     batch_size = 256
-    epochs = 1
+    epochs = 10000
 
-    steps_per_epoch = 395_000 // batch_size
+    steps_per_epoch = 9_500_000 // batch_size
     total_steps = steps_per_epoch * epochs
 
     lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-        initial_learning_rate=0.000002,
+        initial_learning_rate=0.001,
         decay_steps=total_steps,
         alpha=0.00001
     )
@@ -192,7 +192,7 @@ def main():
     )
 
     print("Successfully loaded checkpoint weights!")
-    aimodel.load_weights("model_iteration/V5.keras")
+    # aimodel.load_weights("model_iteration/V6.keras")
 
     os.makedirs('checkpoints', exist_ok=True)
     os.makedirs('logs', exist_ok=True)
@@ -209,6 +209,10 @@ def main():
             monitor='val_loss',
             mode='min'
         ),
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            restore_best_weights=True)
     ]
 
     print("Starting training...")
@@ -225,7 +229,7 @@ def main():
     print("Evaluating...")
     aimodel.evaluate(test_ds, steps=100, verbose=2)
 
-    model_file = "model_iteration/V6.keras"
+    model_file = "model_iteration/V0.keras"
     aimodel.save(model_file)
 
     print("Uploading to Hugging Face...")
@@ -233,7 +237,7 @@ def main():
 
     api.upload_file(
         path_or_fileobj=model_file,
-        path_in_repo="model_iteration/V6.keras",
+        path_in_repo="model_iteration/V0.keras",
         repo_id="notjing/chessai",
         repo_type="model",
         commit_message="Upload trained chess AI model"

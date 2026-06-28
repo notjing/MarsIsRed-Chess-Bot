@@ -1,42 +1,60 @@
 import numpy as np
-import chess
 import onnxruntime as ort
-from utils.board_utils import get_mapped_coords, square_control, piece_positions, dense_params
 import os
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-onnx_path = os.path.join(script_dir, "model/model_iteration/" "V5.onnx")
+session = None
+input_name_board = None
+input_name_extra = None
+def load_model_for_worker(iteration):
+    """
+    loads the most recent iteration for the worker
+    """
+    global session, input_name_board, input_name_extra
 
-cuda_options = {
-    "device_id": 0,
-    "gpu_mem_limit": int(1.5 * 1024 * 1024 * 1024),
-    "arena_extend_strategy": "kSameAsRequested",
-    "cudnn_conv_algo_search": "DEFAULT"
-}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    onnx_path = os.path.join(script_dir, "model", "model_iteration", f"V{iteration}.onnx")
 
-sess_options = ort.SessionOptions()
-sess_options.intra_op_num_threads = 1
-sess_options.inter_op_num_threads = 1
+    cuda_options = {
+        "device_id": 0,
+        "gpu_mem_limit": int(1.5 * 1024 * 1024 * 1024),
+        "arena_extend_strategy": "kSameAsRequested",
+        "cudnn_conv_algo_search": "DEFAULT"
+    }
 
-try:
-    session = ort.InferenceSession(
-        onnx_path,
-        sess_options=sess_options,
-        providers=[
-            ('CUDAExecutionProvider', cuda_options),
-            'CPUExecutionProvider'
-        ]
-    )
-except Exception as e:
-    print(f"Failed to load ONNX model. Error: {e}")
-    raise
+    # locks each worker to a single thread
+    sess_options = ort.SessionOptions()
+    sess_options.intra_op_num_threads = 1
+    sess_options.inter_op_num_threads = 1
 
-# get input names
-input_name_board = session.get_inputs()[0].name
-input_name_extra = session.get_inputs()[1].name
+    try:
+        # loads onnx model
+        session = ort.InferenceSession(
+            onnx_path,
+            sess_options=sess_options,
+            providers=[
+                ('CUDAExecutionProvider', cuda_options),
+                'CPUExecutionProvider'
+            ]
+        )
+
+        # Get input names dynamically
+        input_name_board = session.get_inputs()[0].name
+        input_name_extra = session.get_inputs()[1].name
+
+        print(f"ONNX Session successfully initialized for V{iteration}.onnx")
+
+    except Exception as e:
+        print(f"Failed to load ONNX model {onnx_path}. Error: {e}")
+        raise
 
 
 def evaluate_board(planes, dense):
+    """ Evaluates a batch of board states """
+
+    global session, input_name_board, input_name_extra
+
+    if session is None:
+        raise RuntimeError("ONNX Session not initialized! Call load_model_for_worker() first.")
 
     input_planes = np.array(planes, dtype=np.float32)
     input_vecs = np.array(dense, dtype=np.float32)

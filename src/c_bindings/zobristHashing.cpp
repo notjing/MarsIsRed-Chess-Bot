@@ -1,29 +1,25 @@
 #include "chess.hpp"
+#include "headerFiles/zobristHashing.hpp"
+#include <random>
 
 typedef std::uint64_t u64;
 
-struct Zobrist {
-    u64 pieceSquare [12][64]; // 12 piece types on 64 diff sqrs
-    u64 enPassant [8]; // 8 enpassant files
-    u64 castlingRights [4];
-    u64 sideToMove;
+Zobrist::Zobrist() {
+    std::mt19937_64 rng(1070322);
+    std::uniform_int_distribution<uint64_t> dist(0, UINT64_MAX);
 
-    Zobrist() {
-        std::mt19937_64 rng(1070322);
-        std::uniform_int_distribution<uint64_t> dist(0, UINT64_MAX);
-
-        for(int i = 0; i < 12; i++){
-            for(int j = 0; j < 64; j++){
-                pieceSquare[i][j] = dist(rng);
-            }
+    for(int i = 0; i < 12; i++){
+        for(int j = 0; j < 64; j++){
+            pieceSquare[i][j] = dist(rng);
         }
-
-        for(int i = 0; i < 8; i++) enPassant[i] = dist(rng);
-        for(int i = 0; i < 4; i++) castlingRights[i] = dist(rng);
-
-        sideToMove = dist(rng);
     }
-};
+
+    for(int i = 0; i < 8; i++) enPassant[i] = dist(rng);
+    for(int i = 0; i < 4; i++) castlingRights[i] = dist(rng);
+
+    sideToMove = dist(rng);
+}
+
 
 Zobrist zobrist;
 
@@ -54,7 +50,7 @@ u64 generateHash(chess::Board board){
     for(int idx = 0; idx < 64; idx++){
         chess::Piece p = board.at(chess::Square(idx));
 
-        if(p == chess::Piece::None) continue;
+        if(p == chess::Piece::NONE) continue;
 
         hash ^= zobrist.pieceSquare[pieceToIdx(p.type(), p.color())][idx];
     }

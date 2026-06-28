@@ -4,7 +4,7 @@ from pybind11.setup_helpers import Pybind11Extension, build_ext
 ext_modules = [
     Pybind11Extension(
         "mcts_exts", # output name
-        ["mcts_exts.cpp", "feature_extraction.cpp"],  # input name
+        ["mcts_exts.cpp", "feature_extraction.cpp", "zobristHashing.cpp"],  # input name
     ),
 ]
 

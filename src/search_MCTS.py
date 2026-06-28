@@ -10,7 +10,7 @@ from utils.board_utils import board_params, dense_params
 from c_bindings import mcts_exts
 
 BATCH_SIZE = 128
-NUM_NODES = 1000
+NUM_NODES = 800
 
 def clear_tree():
     mcts_exts.init_tree(chess.Board().fen())
@@ -28,30 +28,35 @@ def search(root_board, time_limit, add_noise):
     # does a batch of 1 to initialize the root_board (? check if still neccessary)
     board_list, dense_list = mcts_exts.get_leaf_batch(1)
 
-    batch_board_layers = np.stack(board_list)
-    batch_dense_layers = np.stack(dense_list)
+    if board_list:
+        batch_board_layers = np.stack(board_list)
+        batch_dense_layers = np.stack(dense_list)
 
-    win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
-    policies = scipy.special.softmax(policies, axis=1)
+        win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
+        policies = scipy.special.softmax(policies, axis=1)
 
-    win_probs_formatted = np.array(win_probs, dtype=np.float32).reshape(len(win_probs), 1)
-    policies_formatted = np.array(policies, dtype=np.float32).reshape(len(policies), 4672)
+        win_probs_formatted = np.array(win_probs, dtype=np.float32).reshape(len(win_probs), 1)
+        policies_formatted = np.array(policies, dtype=np.float32).reshape(len(policies), 4672)
 
-    mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
+        mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
 
     # adds noise to the root
     if add_noise:
-        mcts_exts.apply_dirichlet_noise(alpha=0.3, epsilon=0.15)
+        mcts_exts.apply_dirichlet_noise(alpha=0.3, epsilon=0.25)
 
     start_time = time.time()
     nodes_visited = 0
 
     safe_limit = max(0.1, time_limit - 0.5)
 
-    while nodes_visited < NUM_NODES:
-    # while time.time() - start_time <= safe_limit:
+    # while nodes_visited < NUM_NODES:
+    while time.time() - start_time <= safe_limit:
         # gets a batch of leaves
         board_list, dense_list = mcts_exts.get_leaf_batch(BATCH_SIZE)
+
+        if not board_list:
+            nodes_visited += BATCH_SIZE
+            continue
 
         batch_board_layers = np.stack(board_list)
         batch_dense_layers = np.stack(dense_list)
