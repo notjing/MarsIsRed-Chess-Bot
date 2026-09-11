@@ -10,7 +10,7 @@ def PUCT(node):
     # N is the visit count of the parent node
     # C is just a constant to balance exploitation vs exploration
 
-    Q = 0
+    Q = 0.0
     if node.visit_count > 0:
         Q = node.value_sum / node.visit_count
 
@@ -18,7 +18,7 @@ def PUCT(node):
         Q = -Q
 
     # when c is higher, it increases exploration
-    C = 1
+    C = 1.25
 
     N = node.parent.visit_count if node.parent else 1
     U = C * node.prob * math.sqrt(N) / (1 + node.visit_count)

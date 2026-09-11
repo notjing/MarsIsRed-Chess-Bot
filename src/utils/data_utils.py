@@ -62,7 +62,7 @@ def serialize_example(board_input, extra_input, eval_value, policy_target):
         "board": float_feature(board_input.flatten()),
         "extra": float_feature(extra_input),
         "eval": float_feature([eval_value]),
-        "policy": float_feature(policy_target.flatten())  # NEW: 4672-length array
+        "policy": float_feature(policy_target.flatten())
     }
     example = tf.train.Example(features=tf.train.Features(feature=feature))
     return example.SerializeToString()

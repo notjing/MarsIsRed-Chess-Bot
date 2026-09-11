@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <iostream>
 #include <random>
+#include <cstring>
 
 namespace py = pybind11;
 using namespace chess;
@@ -79,26 +80,24 @@ void init_tree(std::string fen) {
     TREE_ROOT = new Node(nullptr, 1.0, Move::NULL_MOVE, board.sideToMove(), initHash);
 }
 
-
+/*
+    moveUCI is the move that we want to promote onto the current board
+    fen is the current state of the board --> when called at the beginning of search,
+*/
 void promoteRoot(std::string moveUci, std::string fen){
-
-    chess::Board board(fen);
-    chess::Move playedMove = chess::uci::uciToMove(board, moveUci);
 
     if(TREE_ROOT == nullptr){
         init_tree(fen);
         return;
     }
 
+    // looks through the children of TREE_ROOT to find the move and promote it w/o reiniting the whole thing
     for(auto child : TREE_ROOT->children){
-        if(child->move == playedMove){
+        if(uci::moveToUci(child->move) == moveUci){
             Node* tmp = TREE_ROOT;
             TREE_ROOT->children.erase(
-
-            std::remove(TREE_ROOT->children.begin(),
-                        TREE_ROOT->children.end(),
-                        child),
-            TREE_ROOT->children.end()
+                std::remove(TREE_ROOT->children.begin(), TREE_ROOT->children.end(),child),
+                TREE_ROOT->children.end()
             );
 
             TREE_ROOT = child;
@@ -123,6 +122,15 @@ int move_to_index(chess::Move move, chess::Color turn) {
     int to_rank = move.to().rank();
     int to_file = move.to().file();
 
+    if (move.typeOf() == chess::Move::CASTLING) {
+        const bool kingSide = move.to() > move.from();
+        const auto kingTo =
+            chess::Square::castling_king_square(kingSide, turn);
+
+        to_rank = kingTo.rank();
+        to_file = kingTo.file();
+    }
+
     // 2. Mapped coords (Flip for Black perspective)
     int from_r = flip ? from_rank : 7 - from_rank;
     int from_c = from_file;
@@ -136,7 +144,7 @@ int move_to_index(chess::Move move, chess::Color turn) {
     int plane = 0;
 
     // 4. Underpromotions
-    if (move.promotionType() != chess::PieceType::NONE && move.promotionType() != chess::PieceType::QUEEN) {
+    if (move.typeOf() == chess::Move::PROMOTION && move.promotionType() != chess::PieceType::QUEEN) {
         int promo_idx = 0;
         if (move.promotionType() == chess::PieceType::KNIGHT) promo_idx = 0;
         else if (move.promotionType() == chess::PieceType::BISHOP) promo_idx = 1;
@@ -182,6 +190,41 @@ int move_to_index(chess::Move move, chess::Color turn) {
     return (from_r * 8 + from_c) * 73 + plane;
 }
 
+py::array_t<float> normalizePolicy(const float* old_policy, const Board& board) {
+    Movelist legal_moves;
+    movegen::legalmoves(legal_moves, board);
+
+    auto newPolicy = py::array_t<float>(4672);
+    auto newPolicyMut = newPolicy.mutable_unchecked<1>();
+
+    // zero everything first
+    std::memset(newPolicy.mutable_data(), 0, 4672 * sizeof(float));
+
+    float sum = 0.0f;
+    for (const Move& m : legal_moves) {
+        int idx = move_to_index(m, board.sideToMove());
+        sum += old_policy[idx];
+    }
+
+    if (sum > 1e-8f)
+    {
+        for (const Move& m : legal_moves) {
+            int idx = move_to_index(m, board.sideToMove());
+            newPolicyMut(idx) = old_policy[idx] / sum;
+        }
+    }
+    else {
+        float u = 1.0f / std::max<size_t>(1, legal_moves.size());
+        for (const Move& m : legal_moves) {
+            int idx = move_to_index(m, board.sideToMove());
+            newPolicyMut(idx) = u;
+        }
+    }
+
+
+    return newPolicy;
+}
+
 //also the same PUCT function
 double calculate_PUCT(Node* parent, Node* child) {
     double q_value = 0.0;
@@ -197,35 +240,43 @@ double calculate_PUCT(Node* parent, Node* child) {
     return q_value + u_value;
 }
 
-void applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const float* policy, chess::Board& board){
+// returns relative evaluation for the TT
+float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const float* policy, chess::Board& board){
 
     Node* leaf = path.back();
     float win_prob = (leaf->turn == Color::WHITE) ? relative_win_prob : -relative_win_prob;
 
     if (!leaf->is_expanded) {
-        Movelist moves;
-        movegen::legalmoves(moves, board);
+        // get_leaf_batch already decided this leaf is a 2-fold in THIS search.
+        // Do not mark expanded: this node may be promoted to root next move,
+        // where the same position is not yet a draw.
+        if (policy == nullptr) {
+            relative_win_prob = 0;
+            win_prob = 0;
+        } else {
+            Movelist moves;
+            movegen::legalmoves(moves, board);
 
-        if (moves.empty()) {
-            if (board.inCheck()) {
-                win_prob = (board.sideToMove() == Color::WHITE) ? -1.0 : 1.0;
+            if (moves.empty()) {
+                if (board.inCheck()) {
+                    win_prob = (board.sideToMove() == Color::WHITE) ? -1.0 : 1.0;
+                    relative_win_prob = -1.0f;
+                } else {
+                    win_prob = 0.0;
+                    relative_win_prob = 0.0;
+                }
             } else {
-                win_prob = 0.0;
+                for (const Move& m : moves) {
+                    int policy_idx = move_to_index(m, board.sideToMove());
+                    u64 newHash = updateZobristMove(leaf->hash, m, board);
+                    Node* child = new Node(leaf, policy[policy_idx], m, ~board.sideToMove(), newHash);
+
+                    leaf->children.push_back(child);
+                }
             }
+
+            leaf->is_expanded = true;
         }
-        // Normal Expansion
-        else {
-            for (const Move& m : moves) {
-                int policy_idx = move_to_index(m, board.sideToMove());
-                u64 newHash = updateZobristMove(leaf->hash, m, board);
-                Node* child = new Node(leaf, policy[policy_idx], m, ~board.sideToMove(), newHash);
-
-                leaf->children.push_back(child);
-            }
-        }
-
-        leaf->is_expanded = true;
-
     }
 
     for (Node* n : path) {
@@ -233,15 +284,23 @@ void applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const fl
         n->value_sum -= v_loss; // Remove virtual loss
         n->value_sum += win_prob; // Add real evaluation
     }
+
+    return relative_win_prob;
 }
 
 // gets a batch of leaves from the TREE_ROOT
-py::tuple get_leaf_batch(int batch_size) {
+py::tuple get_leaf_batch(int batch_size, std::vector<std::string> gameMoves) {
     py::list board_features;
     py::list dense_features;
 
+    Board root_board(constants::STARTPOS);
+
     batch_paths.clear();
-    Board root_board(ROOT_FEN);
+
+    for(std::string uci : gameMoves){
+        chess::Move m = chess::uci::uciToMove(root_board, uci);
+        root_board.makeMove(m);
+    }
 
     int cacheHits = 0;
 
@@ -264,12 +323,12 @@ py::tuple get_leaf_batch(int batch_size) {
                 }
             }
 
+            if (best_child == nullptr) break;
+
             current = best_child;
             board.makeMove(current->move);
             current_path.push_back(current);
         }
-
-        size_t idx = current->hash & (TABLE_SIZE - 1);
 
         // adds virtual loss to it
         for (Node* n : current_path) {
@@ -280,10 +339,16 @@ py::tuple get_leaf_batch(int batch_size) {
 
         cacheHits++;
 
+        if(board.isRepetition(1) && current_path.size() > 1){
+            applyEvaluation(current_path, 0, nullptr, board);
+            continue;
+        }
+
+        size_t idx = current->hash & (TABLE_SIZE - 1);
+
         // not a collision
         if(transTable[idx].hash == current->hash) {
             applyEvaluation(current_path, transTable[idx].winProbabilities, transTable[idx].policy.data(), board);
-
             continue;
         }
 
@@ -300,6 +365,7 @@ py::tuple get_leaf_batch(int batch_size) {
 void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> policies) {
 
     auto win_probs_buf = win_probs.unchecked<2>();
+    auto policies_buf = policies.unchecked<2>();
 
     // loops through the paths
     for (int i = 0; i < batch_paths.size(); i++) {
@@ -313,13 +379,16 @@ void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> polici
         }
 
         float relative_win_prob = win_probs_buf(i, 0);
-        const float* policy = policies.data(i,0);
+        const float* raw_policy = policies_buf.data(i, 0);
 
-        applyEvaluation(path, relative_win_prob, policy, board);
+        py::array_t<float> norm_policy = normalizePolicy(raw_policy, board);
+        const float* policy = norm_policy.data();
+
+        float rel_prob = applyEvaluation(path, relative_win_prob, policy, board);
 
         size_t idx = leaf->hash & (TABLE_SIZE - 1);
         transTable[idx].hash = leaf->hash;
-        transTable[idx].winProbabilities = relative_win_prob;
+        transTable[idx].winProbabilities = rel_prob;
         std::copy(policy, policy + 4672, transTable[idx].policy.begin());
 
     }
@@ -339,6 +408,8 @@ std::string get_best_move() {
         }
     }
 
+    if(best_child == nullptr) return "0000";
+
     return uci::moveToUci(best_child->move);
 }
 
@@ -347,6 +418,8 @@ void free_tree() {
         delete TREE_ROOT;
         TREE_ROOT = nullptr;
     }
+
+    std::memset(transTable, 0, TABLE_SIZE * sizeof(TableEntry));
 }
 
 void apply_dirichlet_noise(double alpha = 0.3, double epsilon = 0.25) {
@@ -451,4 +524,6 @@ PYBIND11_MODULE(mcts_exts, m) {
     m.def("get_root_policy", &get_root_policy, py::arg("temperature") = 1.0);
     m.def("promote_root", &promoteRoot);
     m.def("print_root_stats", &print_root_stats);
+    m.def("py_board_params", &py_board_params);
+    m.def("py_dense_params", &py_dense_params);
 }

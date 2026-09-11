@@ -2,6 +2,11 @@ import tensorflow as tf
 from huggingface_hub import HfApi
 import os
 
+
+"""
+    This is used to train the base V0 model which is later improved on via RL
+"""
+
 def get_dataset(files, batch_size):
     """ Loads the files into a stream """
 
@@ -12,50 +17,46 @@ def get_dataset(files, batch_size):
         .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
         # essentially shuffles the entire thing (kind of)
         .shuffle(100_000)
-        # stacks the positions into a multi-dim array grouping batch_size boards together
-        # .batch(batch_size, drop_remainder=True)
         # map parses each record
-        .map(parse_tfrecords, num_parallel_calls=tf.data.AUTOTUNE)
+        .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
         # makes the dataset loop infinitely
-        # .repeat()
         # CPU prefetches the next batch
-        # .prefetch(tf.data.AUTOTUNE)
     )
 
+# revisit to see if this is still necessary
 def get_val_dataset(files, batch_size):
     """ Same as above but for validation dataset specifically"""
 
     # Why doesn't the validation dataset need shuffle and repeat?
     # The order doesn't really matter since it's just grading how well it responds to new data (shuffle)
-    # Training is supposed to loop forever and use steps_per_epoch to shop it into epochs while validation is more of a one time thing
+    # Training is supposed to loop forever and use steps_per_epoch to chop it into epochs while validation is more of a one time thing
 
     return (
         files
         .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
-        .map(parse_tfrecords, num_parallel_calls=tf.data.AUTOTUNE)
+        .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
         .batch(batch_size, drop_remainder=True)
         .prefetch(tf.data.AUTOTUNE)
     )
 
 
-def parse_tfrecords(example):
-    """ Takes a batch of .tfrecord and breaks it down into the numbers, returning  """
+def parse_tfrecord(example):
+    """ Converts a tfrecord into its expected input/output"""
 
-    # creates an object describing what the .tfrecord looks like in that order
-    feature_desc = {
+    # creates a description for the tfrecord (shape determined in seralize_example)
+    feature_template = {
         "board": tf.io.FixedLenFeature([8 * 8 * 25], tf.float32),
         "extra": tf.io.FixedLenFeature([19], tf.float32),
         "eval": tf.io.FixedLenFeature([1], tf.float32),
         "policy": tf.io.FixedLenFeature([8 * 8 * 73], tf.float32),
     }
 
-    # parses the record
-    ex = tf.io.parse_example(example, feature_desc)
+    ex = tf.io.parse_example(example, feature_template)
 
-    # reshapes the board back into ndarray
     board = tf.reshape(ex["board"], (8, 8, 25))
 
     return {"board_input": board, "extra_input": ex["extra"]}, {"prob_dist": ex["eval"], "move_dist": ex["policy"]}
+
 
 def res_block(x, filters):
 
@@ -72,7 +73,7 @@ def res_block(x, filters):
 
     # creates an add layer which acts as a shortcut
     # essentially adds the original value of x with the value that is determined by the conv2d's to get a new value
-    # during backprop, taking the derivative will actually send it down both paths with the same strength, thus "skipping" the conv2d layers
+    # during backprop, taking the derivative will actually send it down both paths with the same strength, thus "skipping" the conv2d layers to avoid decay
     x = tf.keras.layers.Add()([shortcut, x])
     return tf.keras.layers.Activation("relu")(x)
 
@@ -130,26 +131,22 @@ def main():
 
     shared_features = cnn_layers
 
-    # which move
+    # from here, cnns are 1x1 kernel size to look through all the layers, finding things on each square
+
+    # policy head
     p = tf.keras.layers.Conv2D(256, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(shared_features)
     p = tf.keras.layers.Conv2D(73, (1, 1), activation="linear", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(p)
 
     p = tf.keras.layers.Flatten(name='move_dist', dtype='float32')(p)
 
-    # winning probability
+    # value head
     v = tf.keras.layers.Conv2D(32, (1, 1), activation="relu", kernel_regularizer=tf.keras.regularizers.l2(5e-5))(shared_features)
     v = tf.keras.layers.Flatten()(v)
     v = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(v)
 
     dense_input = tf.keras.Input(shape=(19,), name="extra_input")
 
-    norm_dense = tf.keras.layers.BatchNormalization()(dense_input)
-
-    dense_layers = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(norm_dense)
-    dense_layers = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(dense_layers)
-    dense_layers = tf.keras.layers.Dense(16, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(dense_layers)
-
-    combined = tf.keras.layers.Concatenate()([v, dense_layers])
+    combined = tf.keras.layers.Concatenate()([v, dense_input])
     z = tf.keras.layers.Dense(64, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(combined)
     z = tf.keras.layers.Dense(32, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(5e-5))(z)
 

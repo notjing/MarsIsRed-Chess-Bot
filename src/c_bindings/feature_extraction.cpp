@@ -6,6 +6,17 @@
 
 namespace py = pybind11;
 
+// bridges to python
+py::array_t<float> py_board_params(std::string fen) {
+    chess::Board board(fen);
+    return boardParams(board);
+}
+
+py::array_t<float> py_dense_params(std::string fen) {
+    chess::Board board(fen);
+    return denseParams(board);
+}
+
 // adjusts square depending on whether it should be flipped due to colour
 chess::Square getMappedSquare(chess::Square sqr, bool flip) {
     int row = sqr.rank();

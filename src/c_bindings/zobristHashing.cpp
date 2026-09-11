@@ -85,43 +85,66 @@ u64 updateZobristMove (u64 hsh, chess::Move mv, chess::Board b){
 
     newHsh = handleZobristCastling(b, newHsh);
 
-    // moved piece
-    newHsh ^= zobrist.pieceSquare[pieceToIdx(movingPiece.type(), movingPiece.color())][fromSquare.index()];
-    newHsh ^= zobrist.pieceSquare[pieceToIdx(movingPiece.type(), movingPiece.color())][toSquare.index()];
 
     // castling
-    if(mv.typeOf() == chess::Move::CASTLING){
-        int rookSqr = -1;
-        if(toSquare == chess::Square::castling_king_square(true, chess::Color::WHITE)) rookSqr = 7;
-        if(toSquare == chess::Square::castling_king_square(false, chess::Color::WHITE)) rookSqr = 0;
-        if(toSquare == chess::Square::castling_king_square(true, chess::Color::BLACK)) rookSqr = 63;
-        if(toSquare == chess::Square::castling_king_square(false, chess::Color::BLACK)) rookSqr = 56;
+    if (mv.typeOf() == chess::Move::CASTLING) {
+        // Internal representation is king -> rook.
+        const bool kingSide = toSquare > fromSquare;
 
-        newHsh ^= zobrist.pieceSquare[pieceToIdx(chess::PieceType::ROOK, movingPiece.color())][rookSqr];
-        newHsh ^= zobrist.pieceSquare[pieceToIdx(chess::PieceType::ROOK, movingPiece.color())][(rookSqr == 0 || rookSqr == 56) ? rookSqr + 3 : rookSqr - 2];
+        const auto kingTo =
+            chess::Square::castling_king_square(kingSide, movingPiece.color());
+
+        const auto rookFrom = toSquare;
+        const auto rookTo =
+            chess::Square::castling_rook_square(kingSide, movingPiece.color());
+
+        // King: e1 -> g1, or e1 -> c1
+        newHsh ^= zobrist.pieceSquare[
+            pieceToIdx(movingPiece.type(), movingPiece.color())
+        ][fromSquare.index()];
+
+        newHsh ^= zobrist.pieceSquare[
+            pieceToIdx(movingPiece.type(), movingPiece.color())
+        ][kingTo.index()];
+
+        // Rook: h1 -> f1, or a1 -> d1
+        newHsh ^= zobrist.pieceSquare[
+            pieceToIdx(chess::PieceType::ROOK, movingPiece.color())
+        ][rookFrom.index()];
+
+        newHsh ^= zobrist.pieceSquare[
+            pieceToIdx(chess::PieceType::ROOK, movingPiece.color())
+        ][rookTo.index()];
     }
-    // captured piece
-    else if(b.isCapture(mv)){
-
-        if(mv.typeOf() == chess::Move::ENPASSANT) {
-            chess::Square capturedSquare = chess::Square(fromSquare.rank(), toSquare.file());
-            chess::Piece capturedPiece = b.at(capturedSquare);
-
-            newHsh ^= zobrist.pieceSquare[pieceToIdx(capturedPiece.type(), capturedPiece.color())][capturedSquare.index()];
-        }
-        else {
-            chess::Piece capturedPiece = b.at(toSquare);
-            newHsh ^= zobrist.pieceSquare[pieceToIdx(capturedPiece.type(), capturedPiece.color())][toSquare.index()];
-        }
-    }
-
-    // promotion
-    if(mv.typeOf() == chess::Move::PROMOTION){
-        chess::PieceType pt = mv.promotionType();
-
-        // gets rid of the pawn
+    else{
+        // moved piece
+        newHsh ^= zobrist.pieceSquare[pieceToIdx(movingPiece.type(), movingPiece.color())][fromSquare.index()];
         newHsh ^= zobrist.pieceSquare[pieceToIdx(movingPiece.type(), movingPiece.color())][toSquare.index()];
-        newHsh ^= zobrist.pieceSquare[pieceToIdx(pt, movingPiece.color())][toSquare.index()];
+
+
+        // captured piece
+        if(b.isCapture(mv)){
+
+            if(mv.typeOf() == chess::Move::ENPASSANT) {
+                chess::Square capturedSquare = chess::Square(fromSquare.rank(), toSquare.file());
+                chess::Piece capturedPiece = b.at(capturedSquare);
+
+                newHsh ^= zobrist.pieceSquare[pieceToIdx(capturedPiece.type(), capturedPiece.color())][capturedSquare.index()];
+            }
+            else {
+                chess::Piece capturedPiece = b.at(toSquare);
+                newHsh ^= zobrist.pieceSquare[pieceToIdx(capturedPiece.type(), capturedPiece.color())][toSquare.index()];
+            }
+        }
+
+        // promotion
+        if(mv.typeOf() == chess::Move::PROMOTION){
+            chess::PieceType pt = mv.promotionType();
+
+            // gets rid of the pawn
+            newHsh ^= zobrist.pieceSquare[pieceToIdx(movingPiece.type(), movingPiece.color())][toSquare.index()];
+            newHsh ^= zobrist.pieceSquare[pieceToIdx(pt, movingPiece.color())][toSquare.index()];
+        }
     }
 
     b.makeMove(mv);

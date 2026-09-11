@@ -1,10 +1,17 @@
-from setuptools import setup
 from pybind11.setup_helpers import Pybind11Extension, build_ext
+from setuptools import setup
+import pybind11
 
 ext_modules = [
     Pybind11Extension(
-        "mcts_exts", # output name
-        ["mcts_exts.cpp", "feature_extraction.cpp", "zobristHashing.cpp"],  # input name
+        "mcts_exts",
+        ["mcts_exts.cpp", "feature_extraction.cpp", "zobristHashing.cpp"],
+        include_dirs=[
+            ".",
+            "headerFiles",
+            pybind11.get_include(),
+        ],
+        cxx_std=17,
     ),
 ]
 
