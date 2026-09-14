@@ -13,6 +13,14 @@ BATCH_SIZE = 32
 NUM_NODES = 800
 
 
+def value_to_scalar(raw_value):
+    """Map value head to (N, 1) in [-1, 1]. tanh scalar, or WDL [W, D, L] as W - L."""
+    arr = np.asarray(raw_value, dtype=np.float32)
+    if arr.ndim >= 2 and arr.shape[-1] == 3:
+        return (arr[..., 0] - arr[..., 2]).reshape(-1, 1)
+    return arr.reshape(-1, 1)
+
+
 def clear_tree():
     mcts_exts.init_tree(chess.Board().fen())
 
@@ -34,7 +42,7 @@ def get_network_heads(root_board):
     dense = np.expand_dims(mcts_exts.py_dense_params(root_board.fen()), axis=0)
     raw_value, raw_policy = evaluate_board(planes, dense)
 
-    value = float(np.asarray(raw_value).reshape(-1)[0])
+    value = float(value_to_scalar(raw_value).reshape(-1)[0])
     policy = scipy.special.softmax(np.asarray(raw_policy, dtype=np.float32).reshape(1, -1), axis=1)[0]
 
     scored = []
@@ -113,7 +121,7 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
         # print(f"Legal prior mass: {legal_prior_sum:.6f}")
         # print(f"Top legal priors: {legal_priors[:10]}")
 
-        win_probs_formatted = np.array(win_probs, dtype=np.float32).reshape(len(win_probs), 1)
+        win_probs_formatted = value_to_scalar(win_probs)
         policies_formatted = np.array(policies, dtype=np.float32).reshape(len(policies), 4672)
 
         mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
@@ -153,7 +161,7 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
         policies = scipy.special.softmax(policies, axis=1) # logits is True
 
         # normalises the shape
-        win_probs_formatted = np.array(win_probs, dtype=np.float32).reshape(len(board_list), 1)
+        win_probs_formatted = value_to_scalar(win_probs)
         policies_formatted = np.array(policies, dtype=np.float32).reshape(len(board_list), 4672)
 
         # sends it back to backprop w the NN eval

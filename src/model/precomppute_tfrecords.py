@@ -53,6 +53,13 @@ def build_tfrecord_from_pgn(pgn_path, tfrecord_prefix, max_games=None, shard_siz
 
                 # PERSPECTIVE FLIP: Value must be from current player's POV
                 current_value = base_value if turn == chess.WHITE else -base_value
+                win_dist = [];
+                if current_value == 1:
+                    win_dist = [1, 0, 0]
+                elif current_value == -1:
+                    win_dist = [0, 0, 1]
+                else:
+                    win_dist = [0, 1, 0]
 
                 try:
 
@@ -65,7 +72,7 @@ def build_tfrecord_from_pgn(pgn_path, tfrecord_prefix, max_games=None, shard_siz
                     policy_target = make_policy_target(policy, board)
 
                     # Serialize and Write
-                    writer.write(serialize_example(board_layers, dense_layers, current_value, policy_target))
+                    writer.write(serialize_example(board_layers, dense_layers, win_dist, policy_target))
                     count += 1
 
                     # Handle Sharding

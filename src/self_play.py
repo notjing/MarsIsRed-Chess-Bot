@@ -199,6 +199,8 @@ OPENING_BOOK = [
     ["f2f4", "f7f5"]
 ]
 
+BLEND = 0.5
+
 
 def play_single_game():
     board = chess.Board()
@@ -220,6 +222,7 @@ def play_single_game():
 
         search_MCTS.search(board, 0, False, add_noise=True)
         raw_policy = mcts_exts.get_root_policy(T)
+        raw_value = mcts_exts.get_root_value()
 
         policy = [(chess.Move.from_uci(m), p) for m, p in raw_policy]
 
@@ -227,6 +230,7 @@ def play_single_game():
             "board_layers": mcts_exts.py_board_params(board.fen()),
             "dense_layers": mcts_exts.py_dense_params(board.fen()),
             "policy_target": make_policy_target(policy, board),
+            "value_target": raw_value,
             "turn": board.turn
         })
 
@@ -251,13 +255,28 @@ def play_single_game():
 
     tfrecord_examples = []
 
+    dis = 1
     for state in game_history:
         state_value = game_value if state["turn"] == chess.WHITE else -game_value
+
+        wdl_z = []
+        if state_value == 1.0:
+            wdl_z = [1, 0, 0]
+        elif state_value == -1.0:
+            wdl_z = [0, 0, 1]
+        else:
+            wdl_z = [0, 1, 0]
+
+
+        q = state["value_target"]
+        wdl_q = [q, 1-q, 0] if q >= 0 else [0, 1+q, -q]
+
+        wdl = [(1 - BLEND) * a + BLEND * b for a, b in zip(wdl_z, wdl_q)]
 
         example_str = serialize_example(
             state["board_layers"],
             state["dense_layers"],
-            state_value,
+            np.asarray(wdl, dtype=np.float32),
             state["policy_target"]
         )
         tfrecord_examples.append(example_str)

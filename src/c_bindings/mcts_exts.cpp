@@ -491,6 +491,14 @@ py::list get_root_policy(double temperature = 1.0) {
     return policy;
 }
 
+double getRootValue(){
+    if(TREE_ROOT == nullptr || TREE_ROOT->visit_count == 0) return 0;
+
+    double qWhite = TREE_ROOT->value_sum / TREE_ROOT->visit_count;
+
+    return (TREE_ROOT->turn == Color::WHITE) ? qWhite : -qWhite;
+}
+
 // Add this above PYBIND11_MODULE
 void print_root_stats() {
     if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) {
@@ -526,4 +534,5 @@ PYBIND11_MODULE(mcts_exts, m) {
     m.def("print_root_stats", &print_root_stats);
     m.def("py_board_params", &py_board_params);
     m.def("py_dense_params", &py_dense_params);
+    m.def("get_root_value", &getRootValue);
 }

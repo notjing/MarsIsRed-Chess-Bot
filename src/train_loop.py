@@ -33,10 +33,24 @@ EPOCHS = 1
 LEARNING_RATE = 1e-5
 
 SUPERVISED_WEIGHT = 0.10
-CHAMPION = 21
+CHAMPION = 23
 
 
 def parse_tfrecords(example):
+    feature_desc = {
+        "board": tf.io.FixedLenFeature([8 * 8 * 25], tf.float32),
+        "extra": tf.io.FixedLenFeature([19], tf.float32),
+        "eval": tf.io.FixedLenFeature([3], tf.float32),
+        "policy": tf.io.FixedLenFeature([8 * 8 * 73], tf.float32),
+    }
+    ex = tf.io.parse_example(example, feature_desc)
+    board = tf.reshape(ex["board"], (8, 8, 25))
+
+    return {"board_input": board, "extra_input": ex["extra"]}, {"prob_dist": ex["eval"], "move_dist": ex["policy"]}
+
+
+def parse_supervised(example):
+    """Elite PGN shards still store scalar eval {-1, 0, 1}."""
     feature_desc = {
         "board": tf.io.FixedLenFeature([8 * 8 * 25], tf.float32),
         "extra": tf.io.FixedLenFeature([19], tf.float32),
@@ -45,8 +59,12 @@ def parse_tfrecords(example):
     }
     ex = tf.io.parse_example(example, feature_desc)
     board = tf.reshape(ex["board"], (8, 8, 25))
-
-    return {"board_input": board, "extra_input": ex["extra"]}, {"prob_dist": ex["eval"], "move_dist": ex["policy"]}
+    v = ex["eval"]
+    w = tf.maximum(v, 0.0)
+    l = tf.maximum(-v, 0.0)
+    d = 1.0 - w - l
+    wdl = tf.concat([w, d, l], axis=-1)
+    return {"board_input": board, "extra_input": ex["extra"]}, {"prob_dist": wdl, "move_dist": ex["policy"]}
 
 
 def get_dataset(buffer_dir, batch_size, supervised_dir=None):
@@ -70,7 +88,7 @@ def get_dataset(buffer_dir, batch_size, supervised_dir=None):
         ds_sup = (
             sup_files
             .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
-            .map(parse_tfrecords, num_parallel_calls=tf.data.AUTOTUNE)
+            .map(parse_supervised, num_parallel_calls=tf.data.AUTOTUNE)
         )
 
         # mix datasets
@@ -143,7 +161,7 @@ def train_current_model(iteration, buffer_dir):
     model.compile(
         optimizer=optimizer,
         loss={
-            "prob_dist": tf.keras.losses.MeanSquaredError(),
+            "prob_dist": tf.keras.losses.CategoricalCrossentropy(from_logits=False),
             "move_dist": tf.keras.losses.CategoricalCrossentropy(from_logits=True)
         },
         loss_weights={
