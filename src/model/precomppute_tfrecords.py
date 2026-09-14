@@ -1,3 +1,7 @@
+raise SystemExit(
+    "TFRecord export is retired. Use model/precompute_shards.py to write CHAI shards from PGN."
+)
+
 import os
 import chess
 import chess.pgn

@@ -7,15 +7,15 @@ import torch
 import torch.nn.functional as F
 
 from utils.keras_to_torch import load_champion, save_checkpoint
-from model.tfrecord_dataset import make_dataloader
+from model.shard_dataset import make_dataloader
 from model.torch_model import export_onnx, freeze_batchnorm
 
-OUTPUT_DIR = "model/tfrecords/self_gen"
+OUTPUT_DIR = "model/shards/self_gen"
 MODEL_DIR = "model/model_iteration"
-SUPERVISED_DIR = "model/tfrecords"
-NUM_WORKERS = 16
+SUPERVISED_DIR = "model/shards"
+NUM_WORKERS = 1
 
-POSITIONS_PER_WORKER = 50_000
+POSITIONS_PER_WORKER = 1000
 POSITIONS_PER_FILE = 50_000
 MAX_BUFFER_FILES = 48
 BATCH_SIZE = 256
@@ -24,14 +24,14 @@ EPOCHS = 1
 LEARNING_RATE = 1e-5
 
 SUPERVISED_WEIGHT = 0.10
-CHAMPION = 26  # WDL softmax champion; tanh V23.keras will not load
+CHAMPION = 26
 
 DATALOADER_WORKERS = 2
 LOG_EVERY = 50
 
 
 def prune_replay_buffer(buffer_dir, max_files):
-    files = glob.glob(os.path.join(buffer_dir, "*.tfrecord"))
+    files = glob.glob(os.path.join(buffer_dir, "*.bin"))
     files.sort(key=os.path.getmtime)
 
     if len(files) > max_files:
@@ -48,12 +48,12 @@ def prune_replay_buffer(buffer_dir, max_files):
 
 
 def _wdl_ce(pred, target):
-    """CategoricalCrossentropy(from_logits=False) on softmax WDL."""
+    """CategoricalCrossentropy(from_logits=False) on softmax wdl."""
     return -(target * pred.clamp_min(1e-7).log()).sum(dim=1).mean()
 
 
 def _policy_ce(logits, target):
-    """CategoricalCrossentropy(from_logits=True) on soft 4672-way policy."""
+    """CategoricalCrossentropy(from_logits=True) on policy."""
     return -(target * F.log_softmax(logits, dim=1)).sum(dim=1).mean()
 
 
@@ -62,9 +62,9 @@ def train_current_model(iteration, buffer_dir):
     new_pt = os.path.join(MODEL_DIR, f"V{iteration}.pt")
     new_onnx = os.path.join(MODEL_DIR, f"V{iteration}.onnx")
 
-    print(f"Loading previous model: {current_pt} (or V{CHAMPION}.keras)")
+    print(f"Loading previous model: {current_pt} (or V{CHAMPION}.pt)")
 
-    self_play_files = glob.glob(os.path.join(buffer_dir, "*.tfrecord"))
+    self_play_files = glob.glob(os.path.join(buffer_dir, "*.bin"))
     steps_per_epoch = max(1, (len(self_play_files) * POSITIONS_PER_FILE) // BATCH_SIZE)
 
     try:
@@ -146,6 +146,8 @@ def train_current_model(iteration, buffer_dir):
                     logged = 0
     finally:
         del data_iter
+        if hasattr(loader, "dataset") and hasattr(loader.dataset, "close"):
+            loader.dataset.close()
         del loader
 
     print(f"Saving new generation model: {new_pt}")
@@ -168,8 +170,8 @@ def main_orchestrator():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    iteration = 22
-    global_batch_counter = 22
+    iteration = 27
+    global_batch_counter = 27
 
     while True:
         print(f"\n========================================================")

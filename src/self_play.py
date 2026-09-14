@@ -1,13 +1,13 @@
 import chess
 import numpy as np
 import os
-import tensorflow as tf
 import concurrent.futures
 import evaluate
 import search_MCTS
 from utils.math_utils import get_policy
 from utils.board_utils import board_params, dense_params
-from utils.data_utils import make_policy_target, serialize_example
+from utils.data_utils import make_policy_target
+from model.shard_io import ShardWriter
 import random
 from c_bindings import mcts_exts
 
@@ -253,9 +253,8 @@ def play_single_game():
     else:
         return None
 
-    tfrecord_examples = []
+    examples = []
 
-    dis = 1
     for state in game_history:
         state_value = game_value if state["turn"] == chess.WHITE else -game_value
 
@@ -267,21 +266,21 @@ def play_single_game():
         else:
             wdl_z = [0, 1, 0]
 
-
         q = state["value_target"]
         wdl_q = [q, 1-q, 0] if q >= 0 else [0, 1+q, -q]
 
         wdl = [(1 - BLEND) * a + BLEND * b for a, b in zip(wdl_z, wdl_q)]
 
-        example_str = serialize_example(
-            state["board_layers"],
-            state["dense_layers"],
-            np.asarray(wdl, dtype=np.float32),
-            state["policy_target"]
+        examples.append(
+            (
+                state["board_layers"],
+                state["dense_layers"],
+                np.asarray(wdl, dtype=np.float32),
+                state["policy_target"],
+            )
         )
-        tfrecord_examples.append(example_str)
 
-    return tfrecord_examples
+    return examples
 
 
 def generate_self_play_data(target_positions, positions_per_file, output_dir, start_batch, worker_id, champion, iteration=0):
@@ -301,8 +300,8 @@ def generate_self_play_data(target_positions, positions_per_file, output_dir, st
 
     while total_positions_generated < target_positions:
         if writer is None:
-            output_path = os.path.join(output_dir, f"self_play_batch_{batch_num:03d}_w{worker_id}.tfrecord")
-            writer = tf.io.TFRecordWriter(output_path)
+            output_path = os.path.join(output_dir, f"self_play_batch_{batch_num:03d}_w{worker_id}.bin")
+            writer = ShardWriter(output_path)
 
         game_examples = play_single_game()
 
@@ -311,8 +310,8 @@ def generate_self_play_data(target_positions, positions_per_file, output_dir, st
 
         game_count += 1
 
-        for example in game_examples:
-            writer.write(example)
+        for board, extra, wdl, policy in game_examples:
+            writer.write(board, extra, wdl, policy)
 
         positions_yielded = len(game_examples)
         positions_in_current_file += positions_yielded

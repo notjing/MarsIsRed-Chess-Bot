@@ -1,6 +1,5 @@
 import chess
 import numpy as np
-import tensorflow as tf
 
 from utils.board_utils import get_mapped_coords
 
@@ -47,23 +46,3 @@ def make_policy_target(prob_dist, board):
             pass
 
     return target
-
-
-def float_feature(x):
-    """Converts a numpy array into a TF FloatList Feature."""
-    return tf.train.Feature(float_list=tf.train.FloatList(value=x))
-
-
-def serialize_example(board_input, extra_input, eval_dist, policy_target):
-    """
-    Converts features and dual-head targets into the TFRecord file format.
-    """
-    feature = {
-        "board": float_feature(board_input.flatten()),
-        "extra": float_feature(extra_input),
-        "eval": float_feature(eval_dist.flatten()),
-        "policy": float_feature(policy_target.flatten())
-    }
-
-    example = tf.train.Example(features=tf.train.Features(feature=feature))
-    return example.SerializeToString()
