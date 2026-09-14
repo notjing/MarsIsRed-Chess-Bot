@@ -17,6 +17,7 @@ typing_extensions==4.15.0
 uvicorn==0.38.0
 numpy~=1.26.4
 tensorflow==2.20
+torch>=2.6.0
 huggingface_hub==1.1.4
 tensorflow-gpu~=2.10.0
 pandas~=2.3.3

@@ -2,26 +2,17 @@ import os
 import glob
 import concurrent.futures
 import multiprocessing as mp
-import tensorflow as tf
-import tf2onnx
 
-# Import your worker function from your generation script
-from self_play import generate_self_play_data
+import torch
+import torch.nn.functional as F
 
-from arena import run_tournament
-
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    except RuntimeError as e:
-        print(e)
-
-tf.keras.mixed_precision.set_global_policy('mixed_float16')
+from utils.keras_to_torch import load_champion, save_checkpoint
+from model.tfrecord_dataset import make_dataloader
+from model.torch_model import export_onnx, freeze_batchnorm
 
 OUTPUT_DIR = "model/tfrecords/self_gen"
 MODEL_DIR = "model/model_iteration"
+SUPERVISED_DIR = "model/tfrecords"
 NUM_WORKERS = 16
 
 POSITIONS_PER_WORKER = 50_000
@@ -33,79 +24,10 @@ EPOCHS = 1
 LEARNING_RATE = 1e-5
 
 SUPERVISED_WEIGHT = 0.10
-CHAMPION = 23
+CHAMPION = 26  # WDL softmax champion; tanh V23.keras will not load
 
-
-def parse_tfrecords(example):
-    feature_desc = {
-        "board": tf.io.FixedLenFeature([8 * 8 * 25], tf.float32),
-        "extra": tf.io.FixedLenFeature([19], tf.float32),
-        "eval": tf.io.FixedLenFeature([3], tf.float32),
-        "policy": tf.io.FixedLenFeature([8 * 8 * 73], tf.float32),
-    }
-    ex = tf.io.parse_example(example, feature_desc)
-    board = tf.reshape(ex["board"], (8, 8, 25))
-
-    return {"board_input": board, "extra_input": ex["extra"]}, {"prob_dist": ex["eval"], "move_dist": ex["policy"]}
-
-
-def parse_supervised(example):
-    """Elite PGN shards still store scalar eval {-1, 0, 1}."""
-    feature_desc = {
-        "board": tf.io.FixedLenFeature([8 * 8 * 25], tf.float32),
-        "extra": tf.io.FixedLenFeature([19], tf.float32),
-        "eval": tf.io.FixedLenFeature([1], tf.float32),
-        "policy": tf.io.FixedLenFeature([8 * 8 * 73], tf.float32),
-    }
-    ex = tf.io.parse_example(example, feature_desc)
-    board = tf.reshape(ex["board"], (8, 8, 25))
-    v = ex["eval"]
-    w = tf.maximum(v, 0.0)
-    l = tf.maximum(-v, 0.0)
-    d = 1.0 - w - l
-    wdl = tf.concat([w, d, l], axis=-1)
-    return {"board_input": board, "extra_input": ex["extra"]}, {"prob_dist": wdl, "move_dist": ex["policy"]}
-
-
-def get_dataset(buffer_dir, batch_size, supervised_dir=None):
-    self_files = tf.data.Dataset.list_files(
-        os.path.join(buffer_dir, "*.tfrecord"),
-        shuffle=True
-    )
-
-    ds_self = (
-        self_files
-        .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
-        .map(parse_tfrecords, num_parallel_calls=tf.data.AUTOTUNE)
-    )
-
-    if supervised_dir is not None:
-        sup_files = tf.data.Dataset.list_files(
-            os.path.join(supervised_dir, "*.tfrecord"),
-            shuffle=True
-        )
-
-        ds_sup = (
-            sup_files
-            .interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
-            .map(parse_supervised, num_parallel_calls=tf.data.AUTOTUNE)
-        )
-
-        # mix datasets
-        dataset = tf.data.Dataset.sample_from_datasets(
-            [ds_self, ds_sup],
-            weights=[1 - SUPERVISED_WEIGHT, SUPERVISED_WEIGHT]
-        )
-    else:
-        dataset = ds_self
-
-    return (
-        dataset
-        .shuffle(100_000)
-        .batch(batch_size, drop_remainder=True)
-        .repeat()
-        .prefetch(tf.data.AUTOTUNE)
-    )
+DATALOADER_WORKERS = 2
+LOG_EVERY = 50
 
 
 def prune_replay_buffer(buffer_dir, max_files):
@@ -125,90 +47,123 @@ def prune_replay_buffer(buffer_dir, max_files):
         print(f"Replay buffer holds {len(files)}/{max_files} files. No pruning necessary.")
 
 
-def train_current_model(iteration, buffer_dir):
-    # Calculate file paths
-    current_model_path = os.path.join(MODEL_DIR, f"V{CHAMPION}.keras")
-    new_model_path = os.path.join(MODEL_DIR, f"V{iteration}.keras")
+def _wdl_ce(pred, target):
+    """CategoricalCrossentropy(from_logits=False) on softmax WDL."""
+    return -(target * pred.clamp_min(1e-7).log()).sum(dim=1).mean()
 
-    print(f"Loading previous model: {current_model_path}")
+
+def _policy_ce(logits, target):
+    """CategoricalCrossentropy(from_logits=True) on soft 4672-way policy."""
+    return -(target * F.log_softmax(logits, dim=1)).sum(dim=1).mean()
+
+
+def train_current_model(iteration, buffer_dir):
+    current_pt = os.path.join(MODEL_DIR, f"V{CHAMPION}.pt")
+    new_pt = os.path.join(MODEL_DIR, f"V{iteration}.pt")
+    new_onnx = os.path.join(MODEL_DIR, f"V{iteration}.onnx")
+
+    print(f"Loading previous model: {current_pt} (or V{CHAMPION}.keras)")
 
     self_play_files = glob.glob(os.path.join(buffer_dir, "*.tfrecord"))
-
     steps_per_epoch = max(1, (len(self_play_files) * POSITIONS_PER_FILE) // BATCH_SIZE)
 
     try:
-        model = tf.keras.models.load_model(current_model_path, compile=False)
+        model = load_champion(MODEL_DIR, CHAMPION)
     except Exception as e:
-        print(f"CRITICAL ERROR: Could not load {current_model_path}. Did you run the supervised bootstrap? Error: {e}")
+        print(f"CRITICAL ERROR: Could not load V{CHAMPION}. Did you run the supervised bootstrap? Error: {e}")
         return
 
-    for layer in model.layers:
-        if isinstance(layer, tf.keras.layers.BatchNormalization):
-            layer.trainable = False
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training device: {device}")
+    model.to(device)
+    freeze_batchnorm(model)
+    model.train()
 
     print("Building dataset pipeline from current replay buffer...")
-    train_ds = get_dataset(buffer_dir, BATCH_SIZE, supervised_dir="model/tfrecords")
+    loader = make_dataloader(
+        buffer_dir,
+        BATCH_SIZE,
+        supervised_dir=SUPERVISED_DIR,
+        supervised_weight=SUPERVISED_WEIGHT,
+        num_workers=DATALOADER_WORKERS,
+    )
 
     print(f"Training V{iteration} for {EPOCHS} Epoch over the entire Replay Buffer...")
-
-    lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-        initial_learning_rate=LEARNING_RATE,
-        decay_steps=EPOCHS * steps_per_epoch,
-        alpha=1 / 3,
+    total_steps = max(1, EPOCHS * steps_per_epoch)
+    optimizer = torch.optim.Adam(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=LEARNING_RATE,
+        eps=1e-4,
     )
-
-    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule, epsilon=1e-4, global_clipnorm=1.0)
-    model.compile(
-        optimizer=optimizer,
-        loss={
-            "prob_dist": tf.keras.losses.CategoricalCrossentropy(from_logits=False),
-            "move_dist": tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-        },
-        loss_weights={
-            "prob_dist": 1.0,
-            "move_dist": 1.0
-        }
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps,
+        eta_min=LEARNING_RATE / 3,
     )
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-    model.fit(
-        train_ds,
-        epochs=EPOCHS,
-        verbose=1,
-        steps_per_epoch=steps_per_epoch,
-    )
+    data_iter = iter(loader)
+    try:
+        for epoch in range(EPOCHS):
+            running = running_v = running_p = 0.0
+            logged = 0
+            for step in range(steps_per_epoch):
+                board, extra, wdl, policy = next(data_iter)
+                board = board.to(device, non_blocking=True)
+                extra = extra.to(device, non_blocking=True)
+                wdl = wdl.to(device, non_blocking=True)
+                policy = policy.to(device, non_blocking=True)
 
-    print(f"Saving new generation model: {new_model_path}")
-    model.save(new_model_path)
+                optimizer.zero_grad(set_to_none=True)
+                with torch.amp.autocast("cuda", enabled=use_amp, dtype=torch.float16):
+                    pred_wdl, logits = model(board, extra)
+                pred_wdl = pred_wdl.float()
+                logits = logits.float()
+                v_loss = _wdl_ce(pred_wdl, wdl)
+                p_loss = _policy_ce(logits, policy)
+                loss = v_loss + p_loss + model.l2_loss()
 
-    convert_keras_to_onnx(iteration, MODEL_DIR)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
 
-    tf.keras.backend.clear_session()
+                running += float(loss.detach())
+                running_v += float(v_loss.detach())
+                running_p += float(p_loss.detach())
+                logged += 1
+                if logged == LOG_EVERY or step + 1 == steps_per_epoch:
+                    lr = optimizer.param_groups[0]["lr"]
+                    print(
+                        f"  epoch {epoch + 1}/{EPOCHS} step {step + 1}/{steps_per_epoch} "
+                        f"loss={running / logged:.4f} v={running_v / logged:.4f} "
+                        f"p={running_p / logged:.4f} lr={lr:.2e}"
+                    )
+                    running = running_v = running_p = 0.0
+                    logged = 0
+    finally:
+        del data_iter
+        del loader
 
-
-def convert_keras_to_onnx(iteration, model_dir="model_iteration"):
-    keras_path = os.path.join(model_dir, f"V{iteration}.keras")
-    onnx_path = os.path.join(model_dir, f"V{iteration}.onnx")
-
-    print(f"Loading Keras model V{iteration} for ONNX conversion...")
-    model = tf.keras.models.load_model(keras_path, compile=False)
-
-    input_signature = [
-        tf.TensorSpec((None, 8, 8, 25), tf.float32, name="board_input"),
-        tf.TensorSpec((None, 19), tf.float32, name="extra_input")
-    ]
-
-    print(f"Converting V{iteration} to ONNX format...")
-    tf2onnx.convert.from_keras(
-        model,
-        input_signature=input_signature,
-        opset=13,
-        output_path=onnx_path
-    )
-    print(f"Success! Optimized ONNX model saved to {onnx_path}")
+    print(f"Saving new generation model: {new_pt}")
+    model.to("cpu")
+    save_checkpoint(model, new_pt)
+    print(f"Exporting ONNX: {new_onnx}")
+    export_onnx(model, new_onnx)
+    print(f"Success! Optimized ONNX model saved to {new_onnx}")
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def main_orchestrator():
     global SUPERVISED_WEIGHT, CHAMPION
+
+    from self_play import generate_self_play_data
+    from arena import run_tournament
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -276,7 +231,5 @@ def main_orchestrator():
 
 
 if __name__ == "__main__":
-    mp.set_start_method('spawn', force=True)
-
-    # start loop
+    mp.set_start_method("spawn", force=True)
     main_orchestrator()
