@@ -56,7 +56,6 @@ struct TableEntry {
     TableEntry(){
         hash = 0;
     }
-
 };
 
 const int TABLE_SIZE = 1 << 16;
@@ -65,6 +64,15 @@ TableEntry* transTable = new TableEntry[TABLE_SIZE];
 Node* TREE_ROOT = nullptr;
 std::string ROOT_FEN = "";
 std::vector<std::vector<Node*>> batch_paths;
+
+void logVisits(){
+    if(TREE_ROOT == nullptr) std::cout << "TREE_ROOT is null" << "\n";
+    else std::cout << "ROOT VISITS: " << TREE_ROOT->visit_count << "\n";
+}
+
+std::string getFen(){
+    return ROOT_FEN;
+}
 
 // initializes the ROOT_FEN & TREE_ROOT and creates its node
 void init_tree(std::string fen) {
@@ -109,7 +117,6 @@ void promoteRoot(std::string moveUci, std::string fen){
     }
 
     init_tree(fen);
-
 }
 
 // this is the same thing as the one in python
@@ -521,6 +528,8 @@ void print_root_stats() {
 
 // sends these back to python
 PYBIND11_MODULE(mcts_exts, m) {
+    m.def("get_fen", &getFen);
+    m.def("log_visits", &logVisits);
     m.def("init_tree", &init_tree);
     m.def("get_leaf_batch", &get_leaf_batch);
     m.def("expand_and_backprop", &expand_and_backprop);

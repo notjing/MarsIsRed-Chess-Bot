@@ -90,10 +90,29 @@ def _emit_play_info(root_board, best_move, top_k=5):
 def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False):
     """ main search func that returns the best move from the given position """
 
+    tmp_board = root_board.copy()
+
     # checks if the root_board has had any moves made
     if root_board.move_stack:
         # promote the old root to root_board
-        mcts_exts.promote_root(root_board.peek().uci(), root_board.fen())
+
+        missing_moves = []
+
+        reset = True
+        if tmp_board.fen() == mcts_exts.get_fen():
+            reset = False
+
+        while tmp_board.move_stack and tmp_board.fen() != mcts_exts.get_fen():
+            missing_moves.append(tmp_board.pop())
+            if tmp_board.fen() == mcts_exts.get_fen():
+                reset = False
+
+        if reset:
+            mcts_exts.init_tree(root_board.fen())
+        else:
+            for move in reversed(missing_moves):
+                tmp_board.push(move)
+                mcts_exts.promote_root(move.uci(), tmp_board.fen())
     else:
         mcts_exts.init_tree(root_board.fen())
 
@@ -136,6 +155,8 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
     pad = min(0.5, 0.15 * time_limit)
     safe_limit = max(0.05, time_limit - pad)
     deadline = start_time + safe_limit
+
+    mcts_exts.log_visits()
 
     while True:
         if useTime:
