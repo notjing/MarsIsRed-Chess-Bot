@@ -215,13 +215,9 @@ def play_single_game():
 
     # Added a hard 200-move cap to prevent infinite stalling loops
     while not board.is_game_over() and len(game_history) < 250:
-        if len(game_history) <= 40:
-            T = 1.0
-        else:
-            T = 0.0
 
-        search_MCTS.search(board, 0, False, add_noise=True)
-        raw_policy = mcts_exts.get_root_policy(T)
+        chosen_move = search_MCTS.search(board, 0, False, add_noise=True)
+        raw_policy = mcts_exts.get_root_policy()
         raw_value = mcts_exts.get_root_value()
 
         policy = [(chess.Move.from_uci(m), p) for m, p in raw_policy]
@@ -236,8 +232,6 @@ def play_single_game():
 
         moves = [pair[0] for pair in policy]
         probs = [pair[1] for pair in policy]
-
-        chosen_move = np.random.choice(moves, p=probs)
 
         board.push(chosen_move)
 

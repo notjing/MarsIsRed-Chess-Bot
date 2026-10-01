@@ -5,7 +5,7 @@ import pybind11
 ext_modules = [
     Pybind11Extension(
         "mcts_exts",
-        ["mcts_exts.cpp", "feature_extraction.cpp", "zobristHashing.cpp"],
+        ["mcts_exts.cpp", "feature_extraction.cpp", "zobristHashing.cpp", "sequentialHalving.cpp"],
         include_dirs=[
             ".",
             "headerFiles",

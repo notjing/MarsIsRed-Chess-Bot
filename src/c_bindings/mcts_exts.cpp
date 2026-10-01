@@ -4,6 +4,8 @@
 #include "chess.hpp"
 #include "headerFiles/zobristHashing.hpp"
 #include "headerFiles/feature_extraction.hpp"
+#include "headerFiles/node.hpp"
+#include "sequentialHalving.hpp"
 #include <vector>
 #include <string>
 #include <cmath>
@@ -14,39 +16,6 @@
 
 namespace py = pybind11;
 using namespace chess;
-
-// Node :)
-struct Node {
-    int visit_count;
-    double value_sum;
-    double prob;
-    Move move;
-    Color turn;
-    bool is_expanded;
-    u64 hash;
-
-    Node* parent;
-    std::vector<Node*> children;
-
-    //initializer
-    Node(Node* p = nullptr, double pr = 0.0, Move m = Move::NULL_MOVE, Color t = Color::WHITE, u64 hsh = 0) {
-        visit_count = 0;
-        value_sum = 0.0;
-        prob = pr;
-        move = m;
-        turn = t;
-        is_expanded = false;
-        parent = p;
-        hash = hsh;
-    }
-
-    // destructor
-    ~Node() {
-        for (Node* child : children) {
-            delete child;
-        }
-    }
-};
 
 struct TableEntry {
     u64 hash;
@@ -64,6 +33,8 @@ TableEntry* transTable = new TableEntry[TABLE_SIZE];
 Node* TREE_ROOT = nullptr;
 std::string ROOT_FEN = "";
 std::vector<std::vector<Node*>> batch_paths;
+
+SequentialHalving seqHalve;
 
 void logVisits(){
     if(TREE_ROOT == nullptr) std::cout << "TREE_ROOT is null" << "\n";
@@ -94,6 +65,7 @@ void init_tree(std::string fen) {
 */
 void promoteRoot(std::string moveUci, std::string fen){
 
+    seqHalve.reset();
     if(TREE_ROOT == nullptr){
         init_tree(fen);
         return;
@@ -197,43 +169,8 @@ int move_to_index(chess::Move move, chess::Color turn) {
     return (from_r * 8 + from_c) * 73 + plane;
 }
 
-py::array_t<float> normalizePolicy(const float* old_policy, const Board& board) {
-    Movelist legal_moves;
-    movegen::legalmoves(legal_moves, board);
-
-    auto newPolicy = py::array_t<float>(4672);
-    auto newPolicyMut = newPolicy.mutable_unchecked<1>();
-
-    // zero everything first
-    std::memset(newPolicy.mutable_data(), 0, 4672 * sizeof(float));
-
-    float sum = 0.0f;
-    for (const Move& m : legal_moves) {
-        int idx = move_to_index(m, board.sideToMove());
-        sum += old_policy[idx];
-    }
-
-    if (sum > 1e-8f)
-    {
-        for (const Move& m : legal_moves) {
-            int idx = move_to_index(m, board.sideToMove());
-            newPolicyMut(idx) = old_policy[idx] / sum;
-        }
-    }
-    else {
-        float u = 1.0f / std::max<size_t>(1, legal_moves.size());
-        for (const Move& m : legal_moves) {
-            int idx = move_to_index(m, board.sideToMove());
-            newPolicyMut(idx) = u;
-        }
-    }
-
-
-    return newPolicy;
-}
-
 //also the same PUCT function
-double calculate_PUCT(Node* parent, Node* child) {
+double calculate_PUCT(Node* parent, Node* child, double logitSum, double maxLogit) {
     double q_value = 0.0;
     if (child->visit_count > 0) {
         q_value = child->value_sum / child->visit_count;
@@ -243,7 +180,9 @@ double calculate_PUCT(Node* parent, Node* child) {
 
     double C = 1.25;
 
-    double u_value = C * child->prob * std::sqrt(parent->visit_count) / (1.0 + child->visit_count);
+    double prob = std::exp(child->prob - maxLogit) / logitSum;
+
+    double u_value = C * prob * std::sqrt(parent->visit_count) / (1.0 + child->visit_count);
     return q_value + u_value;
 }
 
@@ -255,11 +194,11 @@ float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const f
 
     if (!leaf->is_expanded) {
         // get_leaf_batch already decided this leaf is a 2-fold in THIS search.
-        // Do not mark expanded: this node may be promoted to root next move,
-        // where the same position is not yet a draw.
         if (policy == nullptr) {
             relative_win_prob = 0;
             win_prob = 0;
+
+            leaf->eval = 0;
         } else {
             Movelist moves;
             movegen::legalmoves(moves, board);
@@ -282,6 +221,7 @@ float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const f
                 }
             }
 
+            leaf->eval = relative_win_prob;
             leaf->is_expanded = true;
         }
     }
@@ -304,6 +244,8 @@ py::tuple get_leaf_batch(int batch_size, std::vector<std::string> gameMoves) {
 
     batch_paths.clear();
 
+    if (batch_size == 1) seqHalve.reset();
+
     for(std::string uci : gameMoves){
         chess::Move m = chess::uci::uciToMove(root_board, uci);
         root_board.makeMove(m);
@@ -317,24 +259,40 @@ py::tuple get_leaf_batch(int batch_size, std::vector<std::string> gameMoves) {
         std::vector<Node*> current_path = {current};
         Board board = root_board;
 
-        // selects the leaf
-        while (current->is_expanded && !current->children.empty()) {
-            Node* best_child = nullptr;
-            double best_puct = -9999999.0;
+        if (current->is_expanded) {
+            if(seqHalve.candidates.empty()) return py::make_tuple(board_features, dense_features);
 
-            for (Node* child : current->children) {
-                double score = calculate_PUCT(current, child);
-                if (score > best_puct) {
-                    best_puct = score;
-                    best_child = child;
+            Node* child = seqHalve.getNext();
+            current = child;
+
+            current_path.push_back(child);
+            board.makeMove(child->move);
+
+            // selects the leaf
+            while (current->is_expanded && !current->children.empty()) {
+                Node* best_child = nullptr;
+                double best_puct = -9999999.0;
+
+                double totalLogits = 0.0;
+                double maxLogit = -1e9;
+                for (Node* child: current->children) maxLogit = std::max(maxLogit, child->prob);
+
+                for (Node* child: current->children) totalLogits += std::exp(child->prob - maxLogit);
+
+                for (Node* child : current->children) {
+                    double score = calculate_PUCT(current, child, totalLogits, maxLogit);
+                    if (score > best_puct) {
+                        best_puct = score;
+                        best_child = child;
+                    }
                 }
+
+                if (best_child == nullptr) break;
+
+                current = best_child;
+                board.makeMove(current->move);
+                current_path.push_back(current);
             }
-
-            if (best_child == nullptr) break;
-
-            current = best_child;
-            board.makeMove(current->move);
-            current_path.push_back(current);
         }
 
         // adds virtual loss to it
@@ -368,7 +326,7 @@ py::tuple get_leaf_batch(int batch_size, std::vector<std::string> gameMoves) {
     return py::make_tuple(board_features, dense_features);
 }
 
-
+// policies is passed in as logits
 void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> policies) {
 
     auto win_probs_buf = win_probs.unchecked<2>();
@@ -386,10 +344,7 @@ void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> polici
         }
 
         float relative_win_prob = win_probs_buf(i, 0);
-        const float* raw_policy = policies_buf.data(i, 0);
-
-        py::array_t<float> norm_policy = normalizePolicy(raw_policy, board);
-        const float* policy = norm_policy.data();
+        const float* policy = policies_buf.data(i, 0);
 
         float rel_prob = applyEvaluation(path, relative_win_prob, policy, board);
 
@@ -403,21 +358,8 @@ void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> polici
 
 
 std::string get_best_move() {
-    if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) return "0000";
-
-    Node* best_child = nullptr;
-    int max_visits = -1;
-
-    for (Node* child : TREE_ROOT->children) {
-        if (child->visit_count > max_visits) {
-            max_visits = child->visit_count;
-            best_child = child;
-        }
-    }
-
-    if(best_child == nullptr) return "0000";
-
-    return uci::moveToUci(best_child->move);
+    if(seqHalve.candidates.empty()) return "0000";
+    else return chess::uci::moveToUci(seqHalve.candidates[0]->move);
 }
 
 void free_tree() {
@@ -429,70 +371,94 @@ void free_tree() {
     std::memset(transTable, 0, TABLE_SIZE * sizeof(TableEntry));
 }
 
-void apply_dirichlet_noise(double alpha = 0.3, double epsilon = 0.25) {
+// adds gumbel noise to the logits
+void apply_gumbel_noise() {
     // If the root doesn't exist or hasn't been expanded yet, we can't add noise
     if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) return;
 
-    // Set up the random number generator and the Gamma distribution
+    // setting up gumbel dist. polling
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::gamma_distribution<double> gamma_dist(alpha, 1.0);
+    std::extreme_value_distribution<double> gumbel_dist(0.0, 1.0);
 
     std::vector<double> noise;
-    double sum = 0.0;
 
-    // 1. Generate a Gamma sample for every single legal move
     for (size_t i = 0; i < TREE_ROOT->children.size(); ++i) {
-        double n = gamma_dist(gen);
-        noise.push_back(n);
-        sum += n;
-    }
-
-    // 2. Normalize the samples to create the Dirichlet distribution and apply it
-    if (sum > 1e-8) { // Safety check to prevent division by zero
-        for (size_t i = 0; i < TREE_ROOT->children.size(); ++i) {
-            double normalized_noise = noise[i] / sum;
-
-            // The standard AlphaZero blend formula: (1 - epsilon) * prior + epsilon * noise
-            TREE_ROOT->children[i]->prob = (1.0 - epsilon) * TREE_ROOT->children[i]->prob + (epsilon * normalized_noise);
-        }
+        TREE_ROOT->children[i]->gumbelNoise += gumbel_dist(gen);
     }
 }
 
-py::list get_root_policy(double temperature = 1.0) {
+py::list get_root_policy() {
     py::list policy;
     if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) return policy;
 
-    double total_weight = 0.0;
-    std::vector<double> weights;
+    int cVisit = 50;
+    double scale = 1.0;
+    int maxVisits = 0;
+    double totalVisits = 0.0;
+    double maxLogit = 0.0;
+    bool anyVisited = false;
 
     for (Node* child : TREE_ROOT->children) {
-        double weight = (temperature < 1e-3) ?
-                        ((child->visit_count == TREE_ROOT->children[0]->visit_count) ? 1.0 : 0.0) :
-                        std::pow(child->visit_count, 1.0 / temperature);
-        weights.push_back(weight);
-        total_weight += weight;
+        if (child->visit_count == 0) continue;
+        totalVisits += child->visit_count;
+        maxVisits = std::max(maxVisits, child->visit_count);
+        if (!anyVisited || child->prob > maxLogit) {
+            maxLogit = child->prob;
+            anyVisited = true;
+        }
     }
 
-    if (temperature < 1e-3) {
-        int best_idx = 0;
-        int max_visits = -1;
-        for (size_t i = 0; i < TREE_ROOT->children.size(); ++i) {
-            if (TREE_ROOT->children[i]->visit_count > max_visits) {
-                max_visits = TREE_ROOT->children[i]->visit_count;
-                best_idx = i;
-            }
+    // prior sum
+    double sumPrior = 0.0;
+    if (anyVisited) {
+        for (Node* child : TREE_ROOT->children) {
+            if (child->visit_count == 0) continue;
+            sumPrior += std::exp(child->prob - maxLogit);
         }
-        for (size_t i = 0; i < weights.size(); ++i) {
-            weights[i] = (i == best_idx) ? 1.0 : 0.0;
+    }
+
+    double Q = 0.0;
+
+    // calculates cumulative Q
+    if (anyVisited) {
+        for (Node* child : TREE_ROOT->children) {
+            if (child->visit_count == 0) continue;
+            int turn = child->turn == chess::Color::WHITE ? -1 : 1;
+            double q = turn * child->value_sum / child->visit_count;
+            double prior = std::exp(child->prob - maxLogit) / sumPrior;
+            Q += prior * q;
         }
-        total_weight = 1.0;
+    }
+
+    double v = (TREE_ROOT->eval + totalVisits * Q) / (totalVisits + 1.0);
+
+    std::vector<double> scores;
+    scores.reserve(TREE_ROOT->children.size());
+
+    // assigns all scores to root children
+    for (Node* child : TREE_ROOT->children) {
+        int turn = child->turn == chess::Color::WHITE ? -1 : 1;
+        double qHat = v;
+        if (child->visit_count != 0) {
+            qHat = turn * child->value_sum / child->visit_count;
+        }
+        double score = child->prob + (cVisit + maxVisits) * scale * qHat;
+        scores.push_back(score);
+    }
+
+    // softmax
+    double maxScore = *std::max_element(scores.begin(), scores.end());
+    double sumExp = 0.0;
+    for (double& score : scores) {
+        score = std::exp(score - maxScore);
+        sumExp += score;
     }
 
     for (size_t i = 0; i < TREE_ROOT->children.size(); ++i) {
-        std::string move_uci = uci::moveToUci(TREE_ROOT->children[i]->move);
-        double prob = (total_weight > 0) ? (weights[i] / total_weight) : 0.0;
-        policy.append(py::make_tuple(move_uci, prob));
+        policy.append(py::make_tuple(
+            uci::moveToUci(TREE_ROOT->children[i]->move),
+            scores[i] / sumExp));
     }
 
     return policy;
@@ -526,6 +492,27 @@ void print_root_stats() {
     std::cout << "--------------------------------\n" << std::endl;
 }
 
+void initialize_sequential_halving(){
+    if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) return;
+    seqHalve.reset();
+
+    std::sort(TREE_ROOT->children.begin(), TREE_ROOT->children.end(), [](Node* a, Node* b){
+        return (a->prob + a->gumbelNoise) > (b->prob + b->gumbelNoise);
+    });
+
+    for(int i = 0; i < std::min(seqHalve.k, (int)TREE_ROOT->children.size()); i++){
+        seqHalve.candidates.push_back(TREE_ROOT->children[i]);
+    }
+
+    seqHalve.k = std::min(seqHalve.k, (int)TREE_ROOT->children.size());
+}
+
+void updatePhase() {
+    if (TREE_ROOT != nullptr) {
+        seqHalve.updatePhaseIfNeeded();
+    }
+}
+
 // sends these back to python
 PYBIND11_MODULE(mcts_exts, m) {
     m.def("get_fen", &getFen);
@@ -535,13 +522,13 @@ PYBIND11_MODULE(mcts_exts, m) {
     m.def("expand_and_backprop", &expand_and_backprop);
     m.def("get_best_move", &get_best_move);
     m.def("free_tree", &free_tree);
-    m.def("apply_dirichlet_noise", &apply_dirichlet_noise,
-          py::arg("alpha") = 0.3,
-          py::arg("epsilon") = 0.25);
-    m.def("get_root_policy", &get_root_policy, py::arg("temperature") = 1.0);
+    m.def("apply_gumbel_noise", &apply_gumbel_noise);
+    m.def("get_root_policy", &get_root_policy);
     m.def("promote_root", &promoteRoot);
     m.def("print_root_stats", &print_root_stats);
     m.def("py_board_params", &py_board_params);
     m.def("py_dense_params", &py_dense_params);
     m.def("get_root_value", &getRootValue);
+    m.def("initialize_sequential_halving", &initialize_sequential_halving);
+    m.def("update_phase", &updatePhase);
 }

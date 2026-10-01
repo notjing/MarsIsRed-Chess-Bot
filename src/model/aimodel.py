@@ -5,6 +5,7 @@ import os
 
 """
     This is used to train the base V0 model which is later improved on via RL
+    NO LONGER USED ANYMORE ONCE (NOW USE PYTORCH)
 """
 
 def get_dataset(files, batch_size):

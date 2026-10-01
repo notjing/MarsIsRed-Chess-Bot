@@ -9,7 +9,11 @@ from utils.math_utils import PUCT
 from utils.board_utils import board_params, dense_params
 from c_bindings import mcts_exts
 
-BATCH_SIZE = 32
+# Sequential Halving Constants
+totalVisits = 32
+k = 4
+
+BATCH_SIZE = 16
 NUM_NODES = 800
 
 
@@ -67,7 +71,7 @@ def _emit_play_info(root_board, best_move, top_k=5):
     side = "White" if root_board.turn == chess.WHITE else "Black"
     nn_moves = _compact_moves(root_board, scored, top_k)
 
-    raw = mcts_exts.get_root_policy(temperature=1.0)
+    raw = mcts_exts.get_root_policy()
     mcts_pairs = []
     if raw:
         ranked = sorted(raw, key=lambda item: item[1], reverse=True)[:top_k]
@@ -124,13 +128,13 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
         batch_dense_layers = np.stack(dense_list)
 
         win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
-        policies = scipy.special.softmax(policies, axis=1)
+        output_policies = scipy.special.softmax(policies, axis=1)
 
         legal_prior_sum = 0.0
         legal_priors = []
 
         for move in root_board.legal_moves:
-            prob = float(policies[0][policy_index(move, root_board.turn)])
+            prob = float(output_policies[0][policy_index(move, root_board.turn)])
             legal_prior_sum += prob
             legal_priors.append((move.uci(), prob))
 
@@ -147,7 +151,9 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
 
     # adds noise to the root
     if add_noise:
-        mcts_exts.apply_dirichlet_noise(alpha=0.3, epsilon=0.25)
+        mcts_exts.apply_gumbel_noise()
+
+    mcts_exts.initialize_sequential_halving()
 
     start_time = time.time()
     nodes_visited = 0
@@ -158,36 +164,39 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
 
     mcts_exts.log_visits()
 
-    while True:
-        if useTime:
-            if time.time() + last_batch_dt > deadline:
-                break
-        elif nodes_visited >= NUM_NODES:
-            break
+    for round_idx in range(int(math.log2(k))):
+        visits_completed = 0
+        while visits_completed < totalVisits // int(math.log2(k)):
+            if useTime:
+                if time.time() + last_batch_dt > deadline:
+                    break
 
-        batch_start = time.time()
-        # gets a batch of leaves
-        board_list, dense_list = mcts_exts.get_leaf_batch(BATCH_SIZE, [m.uci() for m in root_board.move_stack])
-        nodes_visited += BATCH_SIZE
+            batch_start = time.time()
+            # gets a batch of leaves
+            board_list, dense_list = mcts_exts.get_leaf_batch(BATCH_SIZE, [m.uci() for m in root_board.move_stack])
+            nodes_visited += BATCH_SIZE
+            visits_completed += BATCH_SIZE
 
-        if not board_list:
+            if not board_list:
+                last_batch_dt = time.time() - batch_start
+                continue
+
+            batch_board_layers = np.stack(board_list)
+            batch_dense_layers = np.stack(dense_list)
+
+            # evals the batch
+            win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
+
+            # normalises the shape
+            win_probs_formatted = value_to_scalar(win_probs)
+            policies_formatted = np.array(policies, dtype=np.float32).reshape(len(board_list), 4672)
+
+            # sends it back to backprop w the NN eval
+            mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
             last_batch_dt = time.time() - batch_start
-            continue
 
-        batch_board_layers = np.stack(board_list)
-        batch_dense_layers = np.stack(dense_list)
+        mcts_exts.update_phase()
 
-        # evals the batch
-        win_probs, policies = evaluate_board(batch_board_layers, batch_dense_layers)
-        policies = scipy.special.softmax(policies, axis=1) # logits is True
-
-        # normalises the shape
-        win_probs_formatted = value_to_scalar(win_probs)
-        policies_formatted = np.array(policies, dtype=np.float32).reshape(len(board_list), 4672)
-
-        # sends it back to backprop w the NN eval
-        mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
-        last_batch_dt = time.time() - batch_start
 
     best_move_uci = mcts_exts.get_best_move()
     best_move = chess.Move.from_uci(best_move_uci)
