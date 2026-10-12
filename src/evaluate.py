@@ -25,10 +25,10 @@ input_name_board = None
 input_name_extra = None
 
 #def load_model_for_worker(iteration):
-#global session, input_name_board, input_name_extra
+#    global session, input_name_board, input_name_extra
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-onnx_path = os.path.join(script_dir, "model", "model_iteration", f"V{26}.onnx")
+onnx_path = os.path.join(script_dir, "model", "model_iteration", f"V{28}.onnx")
 
 cuda_options = {
     "device_id": 0,
@@ -53,7 +53,7 @@ try:
 
     input_name_board = session.get_inputs()[0].name
     input_name_extra = session.get_inputs()[1].name
-    print(f"ONNX Session successfully initialized for V{26}.onnx")
+    print(f"ONNX Session successfully initialized for V{28}.onnx")
 
 except Exception as e:
     print(f"Failed to load ONNX model {onnx_path}. Error: {e}")

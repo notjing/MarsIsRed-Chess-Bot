@@ -155,30 +155,24 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
 
     mcts_exts.initialize_sequential_halving()
 
-    start_time = time.time()
     nodes_visited = 0
-    last_batch_dt = 0.0
     pad = min(0.5, 0.15 * time_limit)
     safe_limit = max(0.05, time_limit - pad)
-    deadline = start_time + safe_limit
 
-    mcts_exts.log_visits()
+    num_rounds = int(math.log2(k))
+    time_per_round = safe_limit / num_rounds
 
-    for round_idx in range(int(math.log2(k))):
+    for round_idx in range(num_rounds):
+        start_time = time.time()
         visits_completed = 0
-        while visits_completed < totalVisits // int(math.log2(k)):
-            if useTime:
-                if time.time() + last_batch_dt > deadline:
-                    break
+        while time.time() - start_time < time_per_round if useTime else visits_completed < totalVisits // num_rounds:
 
-            batch_start = time.time()
             # gets a batch of leaves
             board_list, dense_list = mcts_exts.get_leaf_batch(BATCH_SIZE, [m.uci() for m in root_board.move_stack])
             nodes_visited += BATCH_SIZE
             visits_completed += BATCH_SIZE
 
             if not board_list:
-                last_batch_dt = time.time() - batch_start
                 continue
 
             batch_board_layers = np.stack(board_list)
@@ -193,7 +187,6 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
 
             # sends it back to backprop w the NN eval
             mcts_exts.expand_and_backprop(win_probs_formatted, policies_formatted)
-            last_batch_dt = time.time() - batch_start
 
         mcts_exts.update_phase()
 

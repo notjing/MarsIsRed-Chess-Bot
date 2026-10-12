@@ -27,7 +27,8 @@ struct TableEntry {
     }
 };
 
-const int TABLE_SIZE = 1 << 16;
+// currently small to test proof of concept locally, will change back with optimisations to TT later
+const int TABLE_SIZE = 1 << 4;
 
 TableEntry* transTable = new TableEntry[TABLE_SIZE];
 Node* TREE_ROOT = nullptr;
@@ -223,6 +224,19 @@ float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const f
 
             leaf->eval = relative_win_prob;
             leaf->is_expanded = true;
+        }
+    }
+
+    Movelist moves;
+    movegen::legalmoves(moves, board);
+
+    if (moves.empty()) {
+        if (board.inCheck()) {
+            win_prob = (board.sideToMove() == Color::WHITE) ? -1.0 : 1.0;
+            relative_win_prob = -1.0f;
+        } else {
+            win_prob = 0.0;
+            relative_win_prob = 0.0;
         }
     }
 
