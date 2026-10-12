@@ -2,7 +2,7 @@
 
 MarsIsRed is an AlphaZero style chess engine, it utilises a dual-policy neural network and a Monte Carlo Tree Search (MCTS) to find the best move instead of relying on opening books / tablebase and human made evaluation functions. It is currently at a provisional 1800 ELO on Lichess blitz.
 
-# Overview
+# Overview (OUTDATED)
 
 To be clear, MarsIsRed is not a wrapper around an existing engine nor a pure AlphaZero clone.  
 
@@ -45,4 +45,7 @@ Initially the supervised to self-generated data split is 60-40, but the supervis
 # How to Run
 TBD
 
+# Improvements
+- [] optimise the transposition table
+- [] train w/ new gumbel search
 
