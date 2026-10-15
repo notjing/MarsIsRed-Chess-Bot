@@ -109,6 +109,7 @@ def train_current_model(iteration, buffer_dir):
             running = running_v = running_p = 0.0
             logged = 0
             for step in range(steps_per_epoch):
+                # moves from ram to gpu
                 board, extra, wdl, policy = next(data_iter)
                 board = board.to(device, non_blocking=True)
                 extra = extra.to(device, non_blocking=True)
