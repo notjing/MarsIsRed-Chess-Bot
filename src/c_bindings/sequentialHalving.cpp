@@ -5,7 +5,7 @@ void SequentialHalving::reset(){
     candidates.clear();
     visits = 0;
     round = 1;
-    k = 4;
+    k = 8;
 }
 
 Node* SequentialHalving::getNext() {
@@ -13,32 +13,50 @@ Node* SequentialHalving::getNext() {
     return candidates[visits++ % candidates.size()];
 }
 
-void SequentialHalving::updatePhaseIfNeeded(){
-    if(candidates.size() == 1) return;
+int SequentialHalving::getNumCandidates(){
+    return candidates.size();
+}
+
+double SequentialHalving::scoreQ(Node* node, int maxVisits) {
+    if(node == nullptr){
+        std::cout << "WEE WOO SOMETHING BROKEN" << "\n";
+    }
+
+    if (node->visit_count == 0) {
+        return node->prob + node->gumbelNoise;
+    }
+
+    const int cVisit = 50;
+    const double scale = 0.3;
+    const int turn = node->turn == chess::Color::WHITE ? -1 : 1;
+
+    double valHead = (cVisit + maxVisits) * scale * node->value_sum * turn / node->visit_count;
+    return valHead + node->prob + node->gumbelNoise;
+}
+
+void SequentialHalving::updatePhaseIfNeeded() {
+    if (candidates.size() <= 1) return;
 
     round++;
     visits = 0;
 
-    std::sort(candidates.begin(), candidates.end(), [this](Node* a, Node* b){ return calculateQ(a) > calculateQ(b); });
-    candidates.resize(candidates.size() / 2);
-
-}
-
-double SequentialHalving::calculateQ(Node *node){
-    int cVisit = 50;
-    double scale = 1.0;
     int maxVisits = 0;
-
-    for(Node* n : candidates){
+    for (Node* n : candidates) {
         maxVisits = std::max(maxVisits, n->visit_count);
     }
 
-    int turn = node->turn == chess::Color::WHITE ? -1 : 1;
+    std::vector<std::pair<double, Node*>> scored;
+    scored.reserve(candidates.size());
+    for (Node* n : candidates) {
+        scored.emplace_back(scoreQ(n, maxVisits), n);
+    }
 
+    std::sort(scored.begin(), scored.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    double valHead = (cVisit + maxVisits) * scale * node->value_sum * turn / node->visit_count;
-
-    return valHead + node->prob + node->gumbelNoise;
+    candidates.clear();
+    for (const auto& [score, node] : scored) {
+        candidates.push_back(node);
+    }
+    candidates.resize(candidates.size() / 2);
 }
-
-

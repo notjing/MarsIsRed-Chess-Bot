@@ -3,9 +3,9 @@
 struct SequentialHalving{
 
     std::vector<Node*> candidates;
-    int totalVisits = 32; // should be a pow of 2
+    int totalVisits = 64; // should be a pow of 2
     int visits = 0;
-    int k = 4; // should be a pow of 2
+    int k = 8; // should be a pow of 2
     int round = 1;
 
     void reset();
@@ -14,9 +14,11 @@ struct SequentialHalving{
 
     void updatePhaseIfNeeded();
 
+    int getNumCandidates();
+
     private:
 
-        double calculateQ(Node* node);
+        double scoreQ(Node* node, int maxVisits);
 
 
 

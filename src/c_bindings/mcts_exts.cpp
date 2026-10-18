@@ -17,10 +17,16 @@
 namespace py = pybind11;
 using namespace chess;
 
+// used in the TT to store only legal moves
+struct MoveLogit{
+    chess::Move move;
+    float logit;
+};
+
 struct TableEntry {
     u64 hash;
     float winProbabilities;
-    std::array<float, 4672> policy;
+    std::vector<MoveLogit> policy; // instead of storing all moves, only stores logits of legal moves
 
     TableEntry(){
         hash = 0;
@@ -28,7 +34,7 @@ struct TableEntry {
 };
 
 // currently small to test proof of concept locally, will change back with optimisations to TT later
-const int TABLE_SIZE = 1 << 4;
+const int TABLE_SIZE = 1 << 21;
 
 TableEntry* transTable = new TableEntry[TABLE_SIZE];
 Node* TREE_ROOT = nullptr;
@@ -50,6 +56,8 @@ std::string getFen(){
 void init_tree(std::string fen) {
     ROOT_FEN = fen;
     Board board(fen);
+    seqHalve.reset();
+    batch_paths.clear();
 
     if (TREE_ROOT != nullptr) {
         delete TREE_ROOT;
@@ -188,7 +196,7 @@ double calculate_PUCT(Node* parent, Node* child, double logitSum, double maxLogi
 }
 
 // returns relative evaluation for the TT
-float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const float* policy, chess::Board& board){
+float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, std::vector<MoveLogit> *policy, chess::Board& board){
 
     Node* leaf = path.back();
     float win_prob = (leaf->turn == Color::WHITE) ? relative_win_prob : -relative_win_prob;
@@ -201,10 +209,8 @@ float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const f
 
             leaf->eval = 0;
         } else {
-            Movelist moves;
-            movegen::legalmoves(moves, board);
 
-            if (moves.empty()) {
+            if ((*policy).empty()) {
                 if (board.inCheck()) {
                     win_prob = (board.sideToMove() == Color::WHITE) ? -1.0 : 1.0;
                     relative_win_prob = -1.0f;
@@ -213,10 +219,10 @@ float applyEvaluation(std::vector<Node*>& path, float relative_win_prob, const f
                     relative_win_prob = 0.0;
                 }
             } else {
-                for (const Move& m : moves) {
-                    int policy_idx = move_to_index(m, board.sideToMove());
-                    u64 newHash = updateZobristMove(leaf->hash, m, board);
-                    Node* child = new Node(leaf, policy[policy_idx], m, ~board.sideToMove(), newHash);
+                for (const MoveLogit& ml : *policy) {
+                    // policy expects legal moves if its from the transposition table
+                    u64 newHash = updateZobristMove(leaf->hash, ml.move, board);
+                    Node* child = new Node(leaf, ml.logit, ml.move, ~board.sideToMove(), newHash);
 
                     leaf->children.push_back(child);
                 }
@@ -257,8 +263,6 @@ py::tuple get_leaf_batch(int batch_size, std::vector<std::string> gameMoves) {
     Board root_board(constants::STARTPOS);
 
     batch_paths.clear();
-
-    if (batch_size == 1) seqHalve.reset();
 
     for(std::string uci : gameMoves){
         chess::Move m = chess::uci::uciToMove(root_board, uci);
@@ -327,7 +331,7 @@ py::tuple get_leaf_batch(int batch_size, std::vector<std::string> gameMoves) {
 
         // not a collision
         if(transTable[idx].hash == current->hash) {
-            applyEvaluation(current_path, transTable[idx].winProbabilities, transTable[idx].policy.data(), board);
+            applyEvaluation(current_path, transTable[idx].winProbabilities, &transTable[idx].policy, board);
             continue;
         }
 
@@ -360,12 +364,23 @@ void expand_and_backprop(py::array_t<float> win_probs, py::array_t<float> polici
         float relative_win_prob = win_probs_buf(i, 0);
         const float* policy = policies_buf.data(i, 0);
 
-        float rel_prob = applyEvaluation(path, relative_win_prob, policy, board);
+        // turning the policy to only legal moves
+        Movelist moves;
+        movegen::legalmoves(moves, board);
+
+        std::vector<MoveLogit> legalMoves;
+
+        for(const Move& m: moves){
+            int idx = move_to_index(m, board.sideToMove());
+            legalMoves.push_back({m, policy[idx]});
+        }
+
+        float rel_prob = applyEvaluation(path, relative_win_prob, &legalMoves, board);
 
         size_t idx = leaf->hash & (TABLE_SIZE - 1);
         transTable[idx].hash = leaf->hash;
         transTable[idx].winProbabilities = rel_prob;
-        std::copy(policy, policy + 4672, transTable[idx].policy.begin());
+        transTable[idx].policy = legalMoves;
 
     }
 }
@@ -377,12 +392,14 @@ std::string get_best_move() {
 }
 
 void free_tree() {
+    seqHalve.reset();
+    batch_paths.clear();
     if (TREE_ROOT != nullptr) {
         delete TREE_ROOT;
         TREE_ROOT = nullptr;
     }
 
-    std::memset(transTable, 0, TABLE_SIZE * sizeof(TableEntry));
+    for (int i = 0; i < TABLE_SIZE; ++i) transTable[i] = TableEntry();
 }
 
 // adds gumbel noise to the logits
@@ -398,7 +415,7 @@ void apply_gumbel_noise() {
     std::vector<double> noise;
 
     for (size_t i = 0; i < TREE_ROOT->children.size(); ++i) {
-        TREE_ROOT->children[i]->gumbelNoise += gumbel_dist(gen);
+        TREE_ROOT->children[i]->gumbelNoise = gumbel_dist(gen);
     }
 }
 
@@ -407,7 +424,7 @@ py::list get_root_policy() {
     if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) return policy;
 
     int cVisit = 50;
-    double scale = 1.0;
+    double scale = 0.3;
     int maxVisits = 0;
     double totalVisits = 0.0;
     double maxLogit = 0.0;
@@ -479,10 +496,12 @@ py::list get_root_policy() {
 }
 
 double getRootValue(){
-    if(TREE_ROOT == nullptr || TREE_ROOT->visit_count == 0) return 0;
+    if(TREE_ROOT == nullptr || seqHalve.candidates.empty()) return 0;
 
-    double qWhite = TREE_ROOT->value_sum / TREE_ROOT->visit_count;
+    Node* best = seqHalve.candidates[0];
+    if(best->visit_count == 0) return TREE_ROOT->eval;
 
+    double qWhite = best->value_sum / best->visit_count;
     return (TREE_ROOT->turn == Color::WHITE) ? qWhite : -qWhite;
 }
 
@@ -521,6 +540,10 @@ void initialize_sequential_halving(){
     seqHalve.k = std::min(seqHalve.k, (int)TREE_ROOT->children.size());
 }
 
+int getNumCandidates(){
+    return seqHalve.getNumCandidates();
+}
+
 void updatePhase() {
     if (TREE_ROOT != nullptr) {
         seqHalve.updatePhaseIfNeeded();
@@ -544,5 +567,6 @@ PYBIND11_MODULE(mcts_exts, m) {
     m.def("py_dense_params", &py_dense_params);
     m.def("get_root_value", &getRootValue);
     m.def("initialize_sequential_halving", &initialize_sequential_halving);
+    m.def("get_num_candidates", &getNumCandidates);
     m.def("update_phase", &updatePhase);
 }

@@ -10,8 +10,8 @@ from utils.board_utils import board_params, dense_params
 from c_bindings import mcts_exts
 
 # Sequential Halving Constants
-totalVisits = 32
-k = 4
+totalVisits = 64
+k = 8
 
 BATCH_SIZE = 16
 NUM_NODES = 800
@@ -160,17 +160,27 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
     safe_limit = max(0.05, time_limit - pad)
 
     num_rounds = int(math.log2(k))
+
+    actual_k = mcts_exts.get_num_candidates()
+    if actual_k <= 1:
+        num_rounds = 1
+    else:
+        num_rounds = max(1, int(math.ceil(math.log2(actual_k))))
+
     time_per_round = safe_limit / num_rounds
 
     for round_idx in range(num_rounds):
         start_time = time.time()
         visits_completed = 0
         while time.time() - start_time < time_per_round if useTime else visits_completed < totalVisits // num_rounds:
+            cur_batch = mcts_exts.get_num_candidates()
+            if cur_batch <= 0:
+                break
 
             # gets a batch of leaves
-            board_list, dense_list = mcts_exts.get_leaf_batch(BATCH_SIZE, [m.uci() for m in root_board.move_stack])
-            nodes_visited += BATCH_SIZE
-            visits_completed += BATCH_SIZE
+            board_list, dense_list = mcts_exts.get_leaf_batch(cur_batch, [m.uci() for m in root_board.move_stack])
+            nodes_visited += cur_batch
+            visits_completed += cur_batch
 
             if not board_list:
                 continue

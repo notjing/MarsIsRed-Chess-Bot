@@ -17,14 +17,14 @@ NUM_WORKERS = 1
 
 POSITIONS_PER_WORKER = 50_000
 POSITIONS_PER_FILE = 50_000
-MAX_BUFFER_FILES = 48
+MAX_BUFFER_FILES = 8
 BATCH_SIZE = 256
 
 EPOCHS = 1
 LEARNING_RATE = 1e-5
 
-SUPERVISED_WEIGHT = 0.10
-CHAMPION = 26
+SUPERVISED_WEIGHT = 0.05
+CHAMPION = 52
 
 DATALOADER_WORKERS = 1
 LOG_EVERY = 50
@@ -171,8 +171,8 @@ def main_orchestrator():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    iteration = 27
-    global_batch_counter = 27
+    iteration = 53
+    global_batch_counter = 53
 
     while True:
         print(f"\n========================================================")
@@ -227,7 +227,7 @@ def main_orchestrator():
             else:
                 f.write("NOT PROMOTED\n\n")
 
-        SUPERVISED_WEIGHT = max(0.10, SUPERVISED_WEIGHT / 1.50)
+        SUPERVISED_WEIGHT = max(0.05, SUPERVISED_WEIGHT / 1.50)
 
         print(f">>> Iteration {iteration} complete. Loop restarting...\n")
         iteration += 1
