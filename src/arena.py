@@ -109,7 +109,6 @@ OPENING_BOOK = [
     # King's Gambit
     # -----------------------------
     ["e2e4", "e7e5", "f2f4", "e5f4"],
-    ["e2e4", "e7e5", "f2f4", "d7d5"],
 
     # Vienna Gambit
     ["e2e4", "e7e5", "b1c3", "g8f6", "f2f4"],

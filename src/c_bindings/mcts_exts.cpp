@@ -424,7 +424,7 @@ py::list get_root_policy() {
     if (TREE_ROOT == nullptr || TREE_ROOT->children.empty()) return policy;
 
     int cVisit = 50;
-    double scale = 0.3;
+    double scale = 0.1;
     int maxVisits = 0;
     double totalVisits = 0.0;
     double maxLogit = 0.0;

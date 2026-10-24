@@ -15,19 +15,19 @@ MODEL_DIR = "model/model_iteration"
 SUPERVISED_DIR = "model/shards"
 NUM_WORKERS = 1
 
-POSITIONS_PER_WORKER = 50_000
-POSITIONS_PER_FILE = 50_000
-MAX_BUFFER_FILES = 8
+POSITIONS_PER_WORKER = 150_000
+POSITIONS_PER_FILE = 150_000
+MAX_BUFFER_FILES = 24
 BATCH_SIZE = 256
 
 EPOCHS = 1
 LEARNING_RATE = 1e-5
 
 SUPERVISED_WEIGHT = 0.05
-CHAMPION = 52
+CHAMPION = 54
 
 DATALOADER_WORKERS = 1
-LOG_EVERY = 50
+LOG_EVERY = 100
 
 
 def prune_replay_buffer(buffer_dir, max_files):
@@ -171,8 +171,8 @@ def main_orchestrator():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    iteration = 53
-    global_batch_counter = 53
+    iteration = 56
+    global_batch_counter = 56
 
     while True:
         print(f"\n========================================================")

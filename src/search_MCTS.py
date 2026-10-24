@@ -157,7 +157,7 @@ def search(root_board, time_limit, useTime=False, add_noise=False, verbose=False
 
     nodes_visited = 0
     pad = min(0.5, 0.15 * time_limit)
-    safe_limit = max(0.05, time_limit - pad)
+    safe_limit = max(0.02, time_limit - pad)
 
     num_rounds = int(math.log2(k))
 

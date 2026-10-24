@@ -27,7 +27,7 @@ double SequentialHalving::scoreQ(Node* node, int maxVisits) {
     }
 
     const int cVisit = 50;
-    const double scale = 0.3;
+    const double scale = 0.1;
     const int turn = node->turn == chess::Color::WHITE ? -1 : 1;
 
     double valHead = (cVisit + maxVisits) * scale * node->value_sum * turn / node->visit_count;
